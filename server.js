@@ -1,5 +1,5 @@
 // ============================================
-// EVENT CHECK-IN PRO - BACKEND API (FIXED)
+// EVENT CHECK-IN PRO - BACKEND API (UPDATED)
 // ============================================
 
 const express = require('express');
@@ -264,7 +264,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Event routes
+// ============================================
+// EVENT ROUTES (UPDATED - NEW ENDPOINT ADDED)
+// ============================================
+
 app.post('/api/events', async (req, res) => {
   try {
     const { name, date, time_start, time_end, venue_name, venue_id, host_id, expected_guests } = req.body;
@@ -289,6 +292,22 @@ app.post('/api/events', async (req, res) => {
     if (error) throw error;
     
     res.json({ success: true, event: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// 🆕 NEW: Get all events (for venue dashboard)
+app.get('/api/events', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('events')
+      .select('*')
+      .order('date', { ascending: false });
+    
+    if (error) throw error;
+    
+    res.json({ events: data });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -326,7 +345,10 @@ app.get('/api/events/venue/:venueId', async (req, res) => {
   }
 });
 
-// Guest routes
+// ============================================
+// GUEST ROUTES
+// ============================================
+
 app.post('/api/guests', async (req, res) => {
   try {
     const { event_id, name, email, phone, category, plus_ones, is_walkin } = req.body;
@@ -404,7 +426,10 @@ app.post('/api/guests/:guestId/checkin', async (req, res) => {
   }
 });
 
-// Invitation routes
+// ============================================
+// INVITATION ROUTES
+// ============================================
+
 app.post('/api/invitations/send', async (req, res) => {
   try {
     const { event_id, channels } = req.body;
