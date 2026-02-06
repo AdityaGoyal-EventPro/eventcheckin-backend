@@ -359,9 +359,8 @@ app.post('/api/guests', async (req, res) => {
       .eq('id', event_id)
       .single();
     
-    const qrData = generateQRCode({ name, id: crypto.randomUUID() }, event);
-    
-    const { data, error } = await supabase
+    // First create the guest WITHOUT qr_code
+    const { data: guestData, error: insertError } = await supabase
       .from('guests')
       .insert([{
         event_id,
@@ -371,9 +370,22 @@ app.post('/api/guests', async (req, res) => {
         category: category || 'General',
         plus_ones: plus_ones || 0,
         is_walkin: is_walkin || false,
-        qr_code: qrData,
+        qr_code: '', // Temporary empty
         checked_in: false
       }])
+      .select()
+      .single();
+    
+    if (insertError) throw insertError;
+    
+    // Now generate QR code with the ACTUAL guest ID
+    const qrData = generateQRCode({ name, id: guestData.id }, event);
+    
+    // Update guest with proper QR code
+    const { data, error } = await supabase
+      .from('guests')
+      .update({ qr_code: qrData })
+      .eq('id', guestData.id)
       .select()
       .single();
     
