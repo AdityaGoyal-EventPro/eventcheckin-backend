@@ -72,28 +72,36 @@ function getQRCodeURL(qrData) {
 // EMAIL SERVICE - SENDGRID
 // ============================================
 async function sendEmail(to, subject, htmlContent) {
+  console.log('📧 sendEmail called with:', { to, subject, from: process.env.SENDGRID_FROM_EMAIL });
+  
   if (!SENDGRID_API_KEY) {
     console.error('⚠️ SendGrid not configured - skipping email');
     return { success: false, error: 'SendGrid not configured' };
   }
 
+  console.log('✅ SendGrid API key found');
+
   try {
+    const emailPayload = {
+      personalizations: [{
+        to: [{ email: to }],
+        subject: subject
+      }],
+      from: {
+        email: process.env.SENDGRID_FROM_EMAIL || 'noreply@eventcheckin.com',
+        name: 'Event Check-In Pro'
+      },
+      content: [{
+        type: 'text/html',
+        value: htmlContent
+      }]
+    };
+    
+    console.log('📤 Sending to SendGrid API:', JSON.stringify(emailPayload, null, 2));
+    
     const response = await axios.post(
       'https://api.sendgrid.com/v3/mail/send',
-      {
-        personalizations: [{
-          to: [{ email: to }],
-          subject: subject
-        }],
-        from: {
-          email: process.env.SENDGRID_FROM_EMAIL || 'noreply@eventcheckin.com',
-          name: 'Event Check-In Pro'
-        },
-        content: [{
-          type: 'text/html',
-          value: htmlContent
-        }]
-      },
+      emailPayload,
       {
         headers: {
           'Authorization': `Bearer ${SENDGRID_API_KEY}`,
@@ -101,9 +109,12 @@ async function sendEmail(to, subject, htmlContent) {
         }
       }
     );
+    
+    console.log('✅ SendGrid response:', response.status, response.statusText);
     return { success: true };
   } catch (error) {
-    console.error('SendGrid Error:', error.response?.data || error.message);
+    console.error('❌ SendGrid Error:', error.response?.data || error.message);
+    console.error('Full error:', JSON.stringify(error.response?.data, null, 2));
     return { success: false, error: error.message };
   }
 }
@@ -111,24 +122,47 @@ async function sendEmail(to, subject, htmlContent) {
 // ============================================
 // SMS SERVICE - MSG91
 // ============================================
-async function sendSMS(phone, message) {
+async function sendSMS(phone, guestName, eventName, eventDate, eventVenue, qrCodeURL) {
+  console.log('📱 sendSMS called with:', { phone, guestName, eventName });
+  
   if (!MSG91_AUTH_KEY || !MSG91_SENDER_ID) {
     console.error('⚠️ MSG91 not configured - skipping SMS');
     return { success: false, error: 'MSG91 not configured' };
   }
 
+  const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID;
+  if (!MSG91_TEMPLATE_ID) {
+    console.error('⚠️ MSG91 Template ID not configured');
+    return { success: false, error: 'MSG91 Template not configured' };
+  }
+
+  console.log('✅ MSG91 configured, Template ID:', MSG91_TEMPLATE_ID);
+
   try {
+    // Clean phone number (remove non-digits)
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    
+    // MSG91 template variables
+    const payload = {
+      template_id: MSG91_TEMPLATE_ID,
+      short_url: '0',
+      recipients: [
+        {
+          mobiles: cleanPhone,
+          var1: guestName,
+          var2: eventName,
+          var3: eventDate,
+          var4: eventVenue,
+          var5: qrCodeURL
+        }
+      ]
+    };
+
+    console.log('📤 Sending to MSG91:', JSON.stringify(payload, null, 2));
+
     const response = await axios.post(
-      'https://api.msg91.com/api/v5/flow/',
-      {
-        sender: MSG91_SENDER_ID,
-        route: '4',
-        country: '91',
-        sms: [{
-          message: message,
-          to: [phone.replace(/[^0-9]/g, '')]
-        }]
-      },
+      'https://control.msg91.com/api/v5/flow/',
+      payload,
       {
         headers: {
           'authkey': MSG91_AUTH_KEY,
@@ -136,9 +170,12 @@ async function sendSMS(phone, message) {
         }
       }
     );
-    return { success: true };
+    
+    console.log('✅ MSG91 response:', response.data);
+    return { success: true, data: response.data };
   } catch (error) {
-    console.error('MSG91 Error:', error.response?.data || error.message);
+    console.error('❌ MSG91 Error:', error.response?.data || error.message);
+    console.error('Full error:', JSON.stringify(error.response?.data, null, 2));
     return { success: false, error: error.message };
   }
 }
@@ -340,6 +377,86 @@ app.get('/api/events/venue/:venueId', async (req, res) => {
     if (error) throw error;
     
     res.json({ events: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============================================
+// VENUE ROUTES
+// ============================================
+
+// Get all active venues
+app.get('/api/venues', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('venues')
+      .select('*')
+      .eq('status', 'active')
+      .order('name', { ascending: true });
+    
+    if (error) throw error;
+    
+    res.json({ venues: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get venue by ID
+app.get('/api/venues/:id', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('venues')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ venue: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Request new venue
+app.post('/api/venues/request', async (req, res) => {
+  try {
+    const { 
+      venue_name, 
+      address, 
+      city, 
+      state, 
+      contact_name, 
+      contact_email, 
+      contact_phone,
+      requested_by_user_id,
+      requested_by_name,
+      requested_by_email
+    } = req.body;
+    
+    const { data, error } = await supabase
+      .from('venue_requests')
+      .insert([{
+        venue_name,
+        address,
+        city,
+        state,
+        contact_name,
+        contact_email,
+        contact_phone,
+        requested_by_user_id,
+        requested_by_name,
+        requested_by_email,
+        status: 'pending'
+      }])
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, request: data });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
