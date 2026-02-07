@@ -1082,34 +1082,72 @@ app.post('/api/invitations/send', async (req, res) => {
 
 // ============================================
 // SINGLE EVENT DETAILS (with host info)
+// NO JOIN - Fetches separately to avoid relationship errors
 // ============================================
 app.get('/api/events/:id', async (req, res) => {
   try {
-    const { data: event, error } = await supabase
+    const { id } = req.params;
+    console.log('Getting event by ID:', id);
+
+    // Get event without join
+    const { data: event, error: eventError } = await supabase
       .from('events')
-      .select(`
-        *,
-        users!events_host_id_fkey (
-          name,
-          email
-        )
-      `)
-      .eq('id', req.params.id)
+      .select('*')
+      .eq('id', id)
       .single();
-    
-    if (error) throw error;
-    
-    // Flatten host data
-    const eventWithHost = {
+
+    if (eventError) {
+      console.error('Error fetching event:', eventError);
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    // Get host info separately
+    let hostInfo = null;
+    if (event.host_id) {
+      const { data: host } = await supabase
+        .from('users')
+        .select('name, email')
+        .eq('id', event.host_id)
+        .single();
+      
+      if (host) {
+        hostInfo = host;
+      }
+    }
+
+    // Get venue info separately if needed
+    let venueInfo = null;
+    if (event.venue_id) {
+      const { data: venue } = await supabase
+        .from('venues')
+        .select('name, city')
+        .eq('id', event.venue_id)
+        .single();
+      
+      if (venue) {
+        venueInfo = venue;
+      }
+    }
+
+    // Combine all data
+    const eventWithDetails = {
       ...event,
-      host_name: event.users?.name || 'Unknown',
-      host_email: event.users?.email || ''
+      host_name: hostInfo?.name || 'Unknown',
+      host_email: hostInfo?.email || '',
+      venue_name: venueInfo?.name || event.venue_name || 'Unknown',
+      venue_city: venueInfo?.city || ''
     };
-    delete eventWithHost.users;
-    
-    res.json({ event: eventWithHost });
+
+    console.log('Event loaded successfully:', eventWithDetails.name);
+    res.json({ event: eventWithDetails });
+
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    console.error('Error in GET /api/events/:id:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
