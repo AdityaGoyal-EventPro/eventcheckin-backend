@@ -854,6 +854,143 @@ app.post('/api/guests/:guestId/checkin', async (req, res) => {
 });
 
 // ============================================
+// WRISTBAND & QR REGENERATION ROUTES
+// ============================================
+
+// Get wristband colors
+app.get('/api/wristband-colors', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('wristband_colors')
+      .select('*')
+      .eq('is_active', true)
+      .order('name', { ascending: true });
+    
+    if (error) throw error;
+    
+    res.json({ colors: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Update event wristband color
+app.patch('/api/events/:eventId/wristband', async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const { wristband_color } = req.body;
+    
+    const { data, error } = await supabase
+      .from('events')
+      .update({ wristband_color })
+      .eq('id', eventId)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, event: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Regenerate QR code for single guest
+app.post('/api/guests/:guestId/regenerate-qr', async (req, res) => {
+  try {
+    const { guestId } = req.params;
+    
+    // Get guest with event data
+    const { data: guests, error: guestError } = await supabase
+      .from('guests')
+      .select('*, events(*)')
+      .eq('id', guestId);
+    
+    if (guestError || !guests || guests.length === 0) {
+      throw new Error('Guest not found');
+    }
+    
+    const guest = guests[0];
+    
+    // Generate new QR with correct ID
+    const qrData = generateQRCode(
+      { name: guest.name, id: guest.id }, 
+      guest.events
+    );
+    
+    // Update guest
+    const { data, error } = await supabase
+      .from('guests')
+      .update({ qr_code: qrData })
+      .eq('id', guestId)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ success: true, guest: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Regenerate QR codes for all guests in an event
+app.post('/api/events/:eventId/regenerate-all-qr', async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    
+    // Get event
+    const { data: event, error: eventError } = await supabase
+      .from('events')
+      .select('*')
+      .eq('id', eventId)
+      .single();
+    
+    if (eventError) throw eventError;
+    
+    // Get all guests
+    const { data: guests, error: guestsError } = await supabase
+      .from('guests')
+      .select('*')
+      .eq('event_id', eventId);
+    
+    if (guestsError) throw guestsError;
+    
+    let updated = 0;
+    let failed = 0;
+    
+    // Regenerate QR for each guest
+    for (const guest of guests) {
+      try {
+        const qrData = generateQRCode(
+          { name: guest.name, id: guest.id },
+          event
+        );
+        
+        await supabase
+          .from('guests')
+          .update({ qr_code: qrData })
+          .eq('id', guest.id);
+        
+        updated++;
+      } catch (err) {
+        console.error(`Failed to update guest ${guest.id}:`, err);
+        failed++;
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      updated,
+      failed,
+      total: guests.length
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============================================
 // INVITATION ROUTES
 // ============================================
 
