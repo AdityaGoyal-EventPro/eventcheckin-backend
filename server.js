@@ -433,15 +433,33 @@ app.get('/api/events', async (req, res) => {
 
 app.get('/api/events/host/:hostId', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data: events, error } = await supabase
       .from('events')
       .select('*')
       .eq('host_id', req.params.hostId)
+      .is('deleted_by', null)
       .order('date', { ascending: false });
     
     if (error) throw error;
     
-    res.json({ events: data });
+    // Get guest counts for each event
+    const eventsWithStats = await Promise.all(events.map(async (event) => {
+      const { data: guests } = await supabase
+        .from('guests')
+        .select('id, checked_in')
+        .eq('event_id', event.id);
+      
+      const totalGuests = guests?.length || 0;
+      const checkedInCount = guests?.filter(g => g.checked_in).length || 0;
+      
+      return {
+        ...event,
+        total_guests: totalGuests,
+        checked_in_count: checkedInCount
+      };
+    }));
+    
+    res.json({ events: eventsWithStats });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -449,15 +467,33 @@ app.get('/api/events/host/:hostId', async (req, res) => {
 
 app.get('/api/events/venue/:venueId', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data: events, error } = await supabase
       .from('events')
       .select('*')
       .eq('venue_id', req.params.venueId)
+      .is('deleted_by', null)
       .order('date', { ascending: false });
     
     if (error) throw error;
     
-    res.json({ events: data });
+    // Get guest counts for each event
+    const eventsWithStats = await Promise.all(events.map(async (event) => {
+      const { data: guests } = await supabase
+        .from('guests')
+        .select('id, checked_in')
+        .eq('event_id', event.id);
+      
+      const totalGuests = guests?.length || 0;
+      const checkedInCount = guests?.filter(g => g.checked_in).length || 0;
+      
+      return {
+        ...event,
+        total_guests: totalGuests,
+        checked_in_count: checkedInCount
+      };
+    }));
+    
+    res.json({ events: eventsWithStats });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1039,6 +1075,135 @@ app.post('/api/invitations/send', async (req, res) => {
     }
     
     res.json({ success: true, results });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============================================
+// SINGLE EVENT DETAILS (with host info)
+// ============================================
+app.get('/api/events/:id', async (req, res) => {
+  try {
+    const { data: event, error } = await supabase
+      .from('events')
+      .select(`
+        *,
+        users!events_host_id_fkey (
+          name,
+          email
+        )
+      `)
+      .eq('id', req.params.id)
+      .single();
+    
+    if (error) throw error;
+    
+    // Flatten host data
+    const eventWithHost = {
+      ...event,
+      host_name: event.users?.name || 'Unknown',
+      host_email: event.users?.email || ''
+    };
+    delete eventWithHost.users;
+    
+    res.json({ event: eventWithHost });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============================================
+// DELETE EVENT ENDPOINTS
+// ============================================
+
+// Soft delete event
+app.patch('/api/events/:id/delete', async (req, res) => {
+  try {
+    const { deleted_by } = req.body;
+    
+    const { data, error } = await supabase
+      .from('events')
+      .update({ 
+        deleted_by,
+        deleted_at: new Date().toISOString()
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ event: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Hard delete event
+app.delete('/api/events/:id', async (req, res) => {
+  try {
+    // First delete all guests
+    await supabase
+      .from('guests')
+      .delete()
+      .eq('event_id', req.params.id);
+    
+    // Then delete event
+    const { error } = await supabase
+      .from('events')
+      .delete()
+      .eq('id', req.params.id);
+    
+    if (error) throw error;
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============================================
+// GUEST MANAGEMENT ENDPOINTS
+// ============================================
+
+// Update guest
+app.patch('/api/guests/:id', async (req, res) => {
+  try {
+    const { name, email, phone, category, plus_ones } = req.body;
+    
+    const { data, error } = await supabase
+      .from('guests')
+      .update({ 
+        name, 
+        email, 
+        phone, 
+        category, 
+        plus_ones: parseInt(plus_ones) || 0
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ guest: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Delete guest
+app.delete('/api/guests/:id', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('guests')
+      .delete()
+      .eq('id', req.params.id);
+    
+    if (error) throw error;
+    
+    res.json({ success: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
