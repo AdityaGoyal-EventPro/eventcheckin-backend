@@ -307,7 +307,19 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/events', async (req, res) => {
   try {
-    const { name, date, time_start, time_end, venue_name, venue_id, host_id, expected_guests } = req.body;
+    const { name, date, time_start, time_end, venue_id, host_id, expected_guests } = req.body;
+    
+    // Fetch venue name from venues table
+    let venue_name = null;
+    if (venue_id) {
+      const { data: venueData } = await supabase
+        .from('venues')
+        .select('name')
+        .eq('id', venue_id)
+        .single();
+      
+      venue_name = venueData?.name || null;
+    }
     
     const { data, error } = await supabase
       .from('events')
