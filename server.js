@@ -227,6 +227,62 @@ function getInvitationEmailHTML(guest, event, qrCodeURL) {
 }
 
 // ============================================
+// INVITE EMAIL TEMPLATE
+// ============================================
+function getInviteEmailHTML(name, inviteUrl, role, venueId) {
+  const roleText = role === 'venue' ? 'Venue Staff' : role === 'admin' ? 'Administrator' : 'Event Host';
+  
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f4f4f4;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px;">
+          <tr>
+            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">🎉 You're Invited!</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 40px 30px;">
+              <p style="font-size: 16px; color: #333;">Hi <strong>${name}</strong>,</p>
+              <p style="font-size: 16px; color: #333;">
+                You've been invited to join <strong>Event Check-In Pro</strong> as a <strong>${roleText}</strong>.
+              </p>
+              <div style="background-color: #f8f9fa; border-left: 4px solid #667eea; padding: 20px; margin: 20px 0;">
+                <p style="margin: 0; color: #666; font-size: 14px;">
+                  Event Check-In Pro is a modern guest list management and check-in system that makes event management effortless.
+                </p>
+              </div>
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${inviteUrl}" style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                  Accept Invitation
+                </a>
+              </div>
+              <p style="font-size: 14px; color: #666; margin-top: 30px;">
+                This invitation will expire in <strong>48 hours</strong>.
+              </p>
+              <p style="font-size: 12px; color: #999; margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee;">
+                If you didn't expect this invitation, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `;
+}
+
+// ============================================
 // API ROUTES
 // ============================================
 
@@ -482,6 +538,223 @@ app.post('/api/venues/request', async (req, res) => {
     if (error) throw error;
     
     res.json({ success: true, request: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============================================
+// INVITE ROUTES (Admin Only)
+// ============================================
+
+// Middleware to check if user is admin
+const requireAdmin = async (req, res, next) => {
+  try {
+    const userId = req.headers['x-user-id'];
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { data: user } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', userId)
+      .single();
+
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    next();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Create invite
+app.post('/api/invites/create', async (req, res) => {
+  try {
+    const { email, name, role, venue_id, invited_by_user_id, invited_by_name } = req.body;
+
+    // Generate secure token
+    const { data: tokenData } = await supabase.rpc('generate_invite_token');
+    const token = tokenData;
+
+    // Set expiry (48 hours from now)
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 48);
+
+    // Create invite
+    const { data, error } = await supabase
+      .from('invites')
+      .insert([{
+        token,
+        email,
+        name,
+        role,
+        venue_id,
+        invited_by_user_id,
+        invited_by_name,
+        expires_at: expiresAt.toISOString(),
+        status: 'pending'
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Generate invite URL
+    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${token}`;
+
+    // Send invite email
+    if (process.env.SENDGRID_API_KEY) {
+      const emailHTML = getInviteEmailHTML(name, inviteUrl, role, venue_id);
+      await sendEmail(
+        email,
+        `You're invited to Event Check-In Pro`,
+        emailHTML
+      );
+    }
+
+    res.json({ 
+      success: true, 
+      invite: data,
+      inviteUrl 
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get all invites (admin only)
+app.get('/api/invites', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('pending_invites')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    res.json({ invites: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Verify invite token
+app.get('/api/invites/verify/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const { data, error } = await supabase
+      .from('invites')
+      .select('*, venues(name, city)')
+      .eq('token', token)
+      .eq('status', 'pending')
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Invalid or expired invite' });
+    }
+
+    // Check if expired
+    if (new Date(data.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Invite has expired' });
+    }
+
+    res.json({ invite: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Accept invite and create account
+app.post('/api/invites/accept', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+
+    // Verify invite
+    const { data: invite, error: inviteError } = await supabase
+      .from('invites')
+      .select('*')
+      .eq('token', token)
+      .eq('status', 'pending')
+      .single();
+
+    if (inviteError || !invite) {
+      return res.status(404).json({ error: 'Invalid or expired invite' });
+    }
+
+    // Check expiry
+    if (new Date(invite.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Invite has expired' });
+    }
+
+    // Create auth user
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: invite.email,
+      password: password
+    });
+
+    if (authError) throw authError;
+
+    // Fetch venue name if venue_id exists
+    let venue_name = null;
+    if (invite.venue_id) {
+      const { data: venueData } = await supabase
+        .from('venues')
+        .select('name')
+        .eq('id', invite.venue_id)
+        .single();
+      venue_name = venueData?.name;
+    }
+
+    // Create user in users table
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .insert([{
+        id: authData.user.id,
+        email: invite.email,
+        name: invite.name,
+        role: invite.role,
+        venue_id: invite.venue_id,
+        venue_name: venue_name,
+        status: 'active'
+      }])
+      .select()
+      .single();
+
+    if (userError) throw userError;
+
+    // Mark invite as accepted
+    await supabase
+      .from('invites')
+      .update({ 
+        status: 'accepted',
+        accepted_at: new Date().toISOString()
+      })
+      .eq('token', token);
+
+    res.json({ success: true, user: userData });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Revoke invite (admin only)
+app.post('/api/invites/revoke/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('invites')
+      .update({ status: 'revoked' })
+      .eq('id', id);
+
+    if (error) throw error;
+
+    res.json({ success: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
