@@ -244,7 +244,7 @@ app.get('/health', (req, res) => {
 // Auth routes
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { email, password, name, phone, role, venue_name } = req.body;
+    const { email, password, name, phone, role, venue_id } = req.body;
     
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
@@ -252,6 +252,18 @@ app.post('/api/auth/signup', async (req, res) => {
     });
     
     if (authError) throw authError;
+    
+    // Fetch venue name if venue_id provided
+    let venue_name = null;
+    if (venue_id && role === 'venue') {
+      const { data: venueData } = await supabase
+        .from('venues')
+        .select('name')
+        .eq('id', venue_id)
+        .single();
+      
+      venue_name = venueData?.name || null;
+    }
     
     const { data: userData, error: userError } = await supabase
       .from('users')
@@ -261,6 +273,7 @@ app.post('/api/auth/signup', async (req, res) => {
         name,
         phone,
         role,
+        venue_id: role === 'venue' ? venue_id : null,
         venue_name: role === 'venue' ? venue_name : null
       }])
       .select()
