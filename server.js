@@ -302,6 +302,11 @@ app.post('/api/auth/signup', async (req, res) => {
   try {
     const { email, password, name, phone, role, venue_id } = req.body;
     
+    // Validation for venue users
+    if (role === 'venue' && !venue_id) {
+      return res.status(400).json({ error: 'Venue users must select a venue' });
+    }
+    
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password
@@ -321,6 +326,9 @@ app.post('/api/auth/signup', async (req, res) => {
       venue_name = venueData?.name || null;
     }
     
+    // Set status: 'pending' for venue users, 'active' for hosts
+    const status = role === 'venue' ? 'pending' : 'active';
+    
     const { data: userData, error: userError } = await supabase
       .from('users')
       .insert([{
@@ -330,12 +338,32 @@ app.post('/api/auth/signup', async (req, res) => {
         phone,
         role,
         venue_id: role === 'venue' ? venue_id : null,
-        venue_name: role === 'venue' ? venue_name : null
+        venue_name: role === 'venue' ? venue_name : null,
+        status: status
       }])
       .select()
       .single();
     
     if (userError) throw userError;
+    
+    // Send notification email to venue users
+    if (role === 'venue' && process.env.SENDGRID_API_KEY) {
+      const emailHTML = `
+        <h2>Account Pending Approval</h2>
+        <p>Hi ${name},</p>
+        <p>Your venue manager account has been created and is pending admin approval.</p>
+        <p><strong>Venue:</strong> ${venue_name}</p>
+        <p><strong>Status:</strong> Pending ⏳</p>
+        <p>You'll receive an email notification once your account is approved.</p>
+        <p>Thank you,<br>Event Check-In Pro Team</p>
+      `;
+      
+      await sendEmail(
+        email,
+        'Account Pending Approval - Event Check-In Pro',
+        emailHTML
+      );
+    }
     
     res.json({ success: true, user: userData });
   } catch (error) {
@@ -1393,6 +1421,113 @@ app.put('/api/admin/users/:userId', requireAdmin, async (req, res) => {
     });
     
     res.json({ success: true, user: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Approve user (special endpoint with email notification)
+app.post('/api/admin/users/:userId/approve', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const adminId = req.headers['x-user-id'];
+    
+    // Update status to active
+    const { data: user, error } = await supabase
+      .from('users')
+      .update({ status: 'active' })
+      .eq('id', userId)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    // Send approval email
+    if (process.env.SENDGRID_API_KEY && user.email) {
+      const emailHTML = `
+        <h2>✅ Account Approved!</h2>
+        <p>Hi ${user.name},</p>
+        <p>Great news! Your venue manager account has been approved.</p>
+        <p><strong>Venue:</strong> ${user.venue_name || 'N/A'}</p>
+        <p><strong>Status:</strong> Active ✅</p>
+        <p>You can now login and access your venue dashboard.</p>
+        <p><a href="${process.env.FRONTEND_URL || 'https://your-app.vercel.app'}" style="background: #6366f1; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; margin-top: 16px;">Login Now</a></p>
+        <p>Thank you,<br>Event Check-In Pro Team</p>
+      `;
+      
+      await sendEmail(
+        user.email,
+        'Account Approved - Event Check-In Pro',
+        emailHTML
+      );
+    }
+    
+    // Log the action
+    await supabase.from('admin_logs').insert({
+      admin_id: adminId,
+      action: 'USER_APPROVED',
+      target_type: 'user',
+      target_id: userId,
+      details: { name: user.name, email: user.email }
+    });
+    
+    res.json({ success: true, user });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reject user
+app.post('/api/admin/users/:userId/reject', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason } = req.body;
+    const adminId = req.headers['x-user-id'];
+    
+    // Get user details before deleting
+    const { data: user } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Send rejection email
+    if (process.env.SENDGRID_API_KEY && user.email) {
+      const emailHTML = `
+        <h2>Account Application Update</h2>
+        <p>Hi ${user.name},</p>
+        <p>Thank you for your interest in Event Check-In Pro.</p>
+        <p>Unfortunately, we're unable to approve your venue manager account at this time.</p>
+        ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
+        <p>If you believe this is an error or have questions, please contact support.</p>
+        <p>Thank you,<br>Event Check-In Pro Team</p>
+      `;
+      
+      await sendEmail(
+        user.email,
+        'Account Application Update - Event Check-In Pro',
+        emailHTML
+      );
+    }
+    
+    // Delete the user and auth record
+    await supabase.from('users').delete().eq('id', userId);
+    await supabase.auth.admin.deleteUser(userId);
+    
+    // Log the action
+    await supabase.from('admin_logs').insert({
+      admin_id: adminId,
+      action: 'USER_REJECTED',
+      target_type: 'user',
+      target_id: userId,
+      details: { name: user.name, email: user.email, reason }
+    });
+    
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
