@@ -433,17 +433,29 @@ app.get('/api/events', async (req, res) => {
 
 app.get('/api/events/host/:hostId', async (req, res) => {
   try {
+    const { hostId } = req.params;
+    
+    // CRITICAL VALIDATION: Prevent loading all events
+    if (!hostId || hostId === 'undefined' || hostId === 'null') {
+      console.log('Invalid host ID received:', hostId);
+      return res.json({ events: [] });
+    }
+    
+    console.log('Loading events for host:', hostId);
+    
     const { data: events, error } = await supabase
       .from('events')
       .select('*')
-      .eq('host_id', req.params.hostId)
+      .eq('host_id', hostId)
       .is('deleted_by', null)
       .order('date', { ascending: false });
     
     if (error) throw error;
     
+    console.log(`Found ${events?.length || 0} events for host ${hostId}`);
+    
     // Get guest counts for each event
-    const eventsWithStats = await Promise.all(events.map(async (event) => {
+    const eventsWithStats = await Promise.all((events || []).map(async (event) => {
       const { data: guests } = await supabase
         .from('guests')
         .select('id, checked_in')
@@ -461,20 +473,33 @@ app.get('/api/events/host/:hostId', async (req, res) => {
     
     res.json({ events: eventsWithStats });
   } catch (error) {
+    console.error('Error in getByHost:', error);
     res.status(400).json({ error: error.message });
   }
 });
 
 app.get('/api/events/venue/:venueId', async (req, res) => {
   try {
+    const { venueId } = req.params;
+    
+    // CRITICAL VALIDATION: Prevent loading all events
+    if (!venueId || venueId === 'undefined' || venueId === 'null') {
+      console.log('Invalid venue ID received:', venueId);
+      return res.json({ events: [] });
+    }
+    
+    console.log('Loading events for venue:', venueId);
+    
     const { data: events, error } = await supabase
       .from('events')
       .select('*')
-      .eq('venue_id', req.params.venueId)
+      .eq('venue_id', venueId)
       .is('deleted_by', null)
       .order('date', { ascending: false });
     
     if (error) throw error;
+    
+    console.log(`Found ${events?.length || 0} events for venue ${venueId}`);
     
     // Get guest counts for each event
     const eventsWithStats = await Promise.all(events.map(async (event) => {
