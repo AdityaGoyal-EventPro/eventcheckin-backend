@@ -1248,6 +1248,73 @@ app.delete('/api/guests/:id', async (req, res) => {
 });
 
 // ============================================
+// TEST EMAIL ENDPOINT - FOR DEBUGGING
+// ============================================
+app.get('/api/test-email', async (req, res) => {
+  console.log('\n🔍 EMAIL TEST STARTED');
+  console.log('='.repeat(50));
+  
+  // Check environment variables
+  console.log('Environment Check:');
+  console.log('  SENDGRID_API_KEY:', SENDGRID_API_KEY ? '✅ SET (' + SENDGRID_API_KEY.substring(0, 10) + '...)' : '❌ MISSING');
+  console.log('  SENDGRID_FROM_EMAIL:', process.env.SENDGRID_FROM_EMAIL || '❌ MISSING');
+  
+  if (!SENDGRID_API_KEY) {
+    return res.json({
+      success: false,
+      error: 'SENDGRID_API_KEY not set in Railway environment variables',
+      help: 'Go to Railway → Variables → Add SENDGRID_API_KEY'
+    });
+  }
+
+  if (!process.env.SENDGRID_FROM_EMAIL) {
+    return res.json({
+      success: false,
+      error: 'SENDGRID_FROM_EMAIL not set',
+      help: 'Go to Railway → Variables → Add SENDGRID_FROM_EMAIL (e.g., noreply@yourdomain.com)'
+    });
+  }
+
+  console.log('\n📧 Attempting to send test email...');
+  
+  try {
+    const testEmail = req.query.to || 'test@example.com';
+    console.log('  To:', testEmail);
+    console.log('  From:', process.env.SENDGRID_FROM_EMAIL);
+    
+    const result = await sendEmail(
+      testEmail,
+      'Test Email from Event Check-In Pro',
+      '<h1>🎉 Success!</h1><p>If you\'re reading this, SendGrid is working correctly!</p><p>Event Check-In Pro email system is operational.</p>'
+    );
+    
+    console.log('\n✅ Test Result:', result);
+    console.log('='.repeat(50));
+    
+    return res.json({
+      success: result.success,
+      message: result.success 
+        ? 'Test email sent successfully! Check your inbox.' 
+        : 'Failed to send email. Check logs above.',
+      details: result,
+      instructions: result.success 
+        ? 'Email should arrive in 1-2 minutes. Check spam folder if not in inbox.'
+        : 'Check Railway logs for detailed error message.'
+    });
+    
+  } catch (error) {
+    console.error('\n❌ Test Failed:', error.message);
+    console.log('='.repeat(50));
+    
+    return res.json({
+      success: false,
+      error: error.message,
+      details: error.response?.data
+    });
+  }
+});
+
+// ============================================
 // START SERVER
 // ============================================
 app.listen(PORT, () => {
