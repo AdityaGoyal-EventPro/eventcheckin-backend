@@ -1273,6 +1273,273 @@ app.delete('/api/guests/:id', async (req, res) => {
 });
 
 // ============================================
+// ADMIN ENDPOINTS
+// ============================================
+
+// Middleware to check admin access
+const requireAdmin = async (req, res, next) => {
+  const userId = req.headers['x-user-id'];
+  const userRole = req.headers['x-user-role'];
+  
+  if (!userId || userRole !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  
+  // Verify user is actually admin in database
+  const { data: user } = await supabase
+    .from('users')
+    .select('role, status')
+    .eq('id', userId)
+    .single();
+  
+  if (!user || user.role !== 'admin' || user.status !== 'active') {
+    return res.status(403).json({ error: 'Admin access denied' });
+  }
+  
+  next();
+};
+
+// Get system statistics
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+  try {
+    // Get user counts
+    const { data: users } = await supabase
+      .from('users')
+      .select('role, status');
+    
+    const totalUsers = users?.filter(u => u.status === 'active').length || 0;
+    const totalHosts = users?.filter(u => u.role === 'host' && u.status === 'active').length || 0;
+    const totalVenues = users?.filter(u => u.role === 'venue' && u.status === 'active').length || 0;
+    
+    // Get venue locations count
+    const { data: venues } = await supabase
+      .from('venues')
+      .select('id');
+    const totalVenueLocations = venues?.length || 0;
+    
+    // Get events count
+    const { data: events } = await supabase
+      .from('events')
+      .select('id, date');
+    const totalEvents = events?.length || 0;
+    const upcomingEvents = events?.filter(e => new Date(e.date) >= new Date()).length || 0;
+    
+    // Get check-ins count
+    const { data: guests } = await supabase
+      .from('guests')
+      .select('checked_in');
+    const totalCheckins = guests?.filter(g => g.checked_in).length || 0;
+    
+    res.json({
+      stats: {
+        totalUsers,
+        totalHosts,
+        totalVenues,
+        totalVenueLocations,
+        totalEvents,
+        upcomingEvents,
+        totalCheckins
+      }
+    });
+  } catch (error) {
+    console.error('Error loading admin stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get recent activity
+app.get('/api/admin/activity', requireAdmin, async (req, res) => {
+  try {
+    const { data: logs } = await supabase
+      .from('admin_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(10);
+    
+    const activity = (logs || []).map(log => ({
+      message: formatLogMessage(log),
+      timestamp: new Date(log.created_at).toLocaleString()
+    }));
+    
+    res.json({ activity });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all users
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if (error) throw error;
+    
+    res.json({ users: users || [] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update user
+app.put('/api/admin/users/:userId', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { status, role, venue_id } = req.body;
+    const adminId = req.headers['x-user-id'];
+    
+    const updateData = {};
+    if (status) updateData.status = status;
+    if (role) updateData.role = role;
+    if (venue_id !== undefined) updateData.venue_id = venue_id;
+    
+    const { data, error } = await supabase
+      .from('users')
+      .update(updateData)
+      .eq('id', userId)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    // Log the action
+    await supabase.from('admin_logs').insert({
+      admin_id: adminId,
+      action: 'USER_UPDATED',
+      target_type: 'user',
+      target_id: userId,
+      details: updateData
+    });
+    
+    res.json({ success: true, user: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all venues (admin)
+app.get('/api/admin/venues', requireAdmin, async (req, res) => {
+  try {
+    const { data: venues, error } = await supabase
+      .from('venues')
+      .select('*')
+      .order('name', { ascending: true });
+    
+    if (error) throw error;
+    
+    res.json({ venues: venues || [] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create venue (admin)
+app.post('/api/admin/venues', requireAdmin, async (req, res) => {
+  try {
+    const { name, city, address, capacity } = req.body;
+    const adminId = req.headers['x-user-id'];
+    
+    if (!name || !city) {
+      return res.status(400).json({ error: 'Name and city are required' });
+    }
+    
+    const { data, error } = await supabase
+      .from('venues')
+      .insert([{ name, city, address, capacity }])
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    // Log the action
+    await supabase.from('admin_logs').insert({
+      admin_id: adminId,
+      action: 'VENUE_CREATED',
+      target_type: 'venue',
+      target_id: data.id.toString(),
+      details: { name, city }
+    });
+    
+    res.json({ success: true, venue: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update venue (admin)
+app.put('/api/admin/venues/:venueId', requireAdmin, async (req, res) => {
+  try {
+    const { venueId } = req.params;
+    const { name, city, address, capacity } = req.body;
+    const adminId = req.headers['x-user-id'];
+    
+    const { data, error } = await supabase
+      .from('venues')
+      .update({ name, city, address, capacity })
+      .eq('id', venueId)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    // Log the action
+    await supabase.from('admin_logs').insert({
+      admin_id: adminId,
+      action: 'VENUE_UPDATED',
+      target_type: 'venue',
+      target_id: venueId,
+      details: { name, city }
+    });
+    
+    res.json({ success: true, venue: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete venue (admin)
+app.delete('/api/admin/venues/:venueId', requireAdmin, async (req, res) => {
+  try {
+    const { venueId } = req.params;
+    const adminId = req.headers['x-user-id'];
+    
+    const { error } = await supabase
+      .from('venues')
+      .delete()
+      .eq('id', venueId);
+    
+    if (error) throw error;
+    
+    // Log the action
+    await supabase.from('admin_logs').insert({
+      admin_id: adminId,
+      action: 'VENUE_DELETED',
+      target_type: 'venue',
+      target_id: venueId
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper function to format log messages
+function formatLogMessage(log) {
+  const actions = {
+    'USER_UPDATED': `User ${log.target_id} was updated`,
+    'VENUE_CREATED': `New venue "${log.details?.name}" was created`,
+    'VENUE_UPDATED': `Venue "${log.details?.name}" was updated`,
+    'VENUE_DELETED': `Venue was deleted`,
+    'ADMIN_CREATED': `New admin user was created`
+  };
+  
+  return actions[log.action] || log.action;
+}
+
+// ============================================
 // TEST EMAIL ENDPOINT - FOR DEBUGGING
 // ============================================
 app.get('/api/test-email', async (req, res) => {
