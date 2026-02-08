@@ -612,17 +612,19 @@ app.post('/api/venues/request', async (req, res) => {
 const requireAdmin = async (req, res, next) => {
   try {
     const userId = req.headers['x-user-id'];
+    const userRole = req.headers['x-user-role'];
+    
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const { data: user } = await supabase
       .from('users')
-      .select('role')
+      .select('role, status')
       .eq('id', userId)
       .single();
 
-    if (!user || user.role !== 'admin') {
+    if (!user || user.role !== 'admin' || user.status !== 'active') {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
@@ -1273,31 +1275,8 @@ app.delete('/api/guests/:id', async (req, res) => {
 });
 
 // ============================================
-// ADMIN ENDPOINTS
+// ADMIN DASHBOARD ENDPOINTS
 // ============================================
-
-// Middleware to check admin access
-const requireAdmin = async (req, res, next) => {
-  const userId = req.headers['x-user-id'];
-  const userRole = req.headers['x-user-role'];
-  
-  if (!userId || userRole !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  
-  // Verify user is actually admin in database
-  const { data: user } = await supabase
-    .from('users')
-    .select('role, status')
-    .eq('id', userId)
-    .single();
-  
-  if (!user || user.role !== 'admin' || user.status !== 'active') {
-    return res.status(403).json({ error: 'Admin access denied' });
-  }
-  
-  next();
-};
 
 // Get system statistics
 app.get('/api/admin/stats', requireAdmin, async (req, res) => {
