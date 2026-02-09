@@ -629,6 +629,10 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
+// ============================================
+// REPLACE LINES 632-697 in server.js with this:
+// ============================================
+
 // Reset password with token
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
@@ -652,36 +656,34 @@ app.post('/api/auth/reset-password', async (req, res) => {
       .single();
 
     if (userError || !user) {
+      console.log('❌ Token not found or invalid');
       return res.status(400).json({ error: 'Invalid or expired reset token' });
     }
 
     // Check if token is expired
     const expiryDate = new Date(user.reset_token_expiry);
     if (expiryDate < new Date()) {
+      console.log('❌ Token expired:', expiryDate, 'Current:', new Date());
       return res.status(400).json({ error: 'Reset token has expired. Please request a new one.' });
     }
 
-    // Update password in Supabase Auth (no bcrypt needed - Supabase handles hashing)
-    const { error: authError } = await supabase.auth.admin.updateUserById(
-      user.id,
-      { password: newPassword }
-    );
+    console.log('✅ Token valid for user:', user.email);
 
-    if (authError) {
-      console.error('Error updating auth password:', authError);
-      throw authError;
-    }
-
-    // Clear reset token
+    // ✅ FIXED: Update password directly in users table
+    // (No Supabase Auth admin needed - we store passwords in users table)
     const { error: updateError } = await supabase
       .from('users')
       .update({ 
-        reset_token: null,
-        reset_token_expiry: null
+        password: newPassword,        // Update password
+        reset_token: null,            // Clear reset token
+        reset_token_expiry: null      // Clear expiry
       })
       .eq('id', user.id);
 
-    if (updateError) throw updateError;
+    if (updateError) {
+      console.error('❌ Error updating password:', updateError);
+      throw updateError;
+    }
 
     console.log('✅ Password reset successful for:', user.email);
 
@@ -691,8 +693,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Reset password error:', error);
-    res.status(500).json({ error: 'Failed to reset password. Please try again.' });
+    console.error('❌ Reset password error:', error);
+    res.status(500).json({ 
+      error: 'Failed to reset password. Please try again or request a new reset link.' 
+    });
   }
 });
 
