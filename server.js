@@ -1,5 +1,5 @@
 // ============================================
-// EVENT CHECK-IN PRO - BACKEND API (UPDATED)
+// EVENT CHECK-IN PRO - BACKEND API (UPDATED WITH SMS)
 // ============================================
 
 const express = require('express');
@@ -25,12 +25,14 @@ console.log('SUPABASE_KEY:', process.env.SUPABASE_KEY ? '✅ Set' : '❌ Missing
 console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('MSG91_AUTH_KEY:', process.env.MSG91_AUTH_KEY ? '✅ Set' : '❌ Missing');
 console.log('MSG91_SENDER_ID:', process.env.MSG91_SENDER_ID ? '✅ Set' : '❌ Missing');
+console.log('MSG91_TEMPLATE_ID:', process.env.MSG91_TEMPLATE_ID ? '✅ Set' : '❌ Missing');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
 const MSG91_SENDER_ID = process.env.MSG91_SENDER_ID;
+const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID;
 
 // Validate required variables
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -120,7 +122,7 @@ async function sendEmail(to, subject, htmlContent) {
 }
 
 // ============================================
-// SMS SERVICE - MSG91
+// SMS SERVICE - MSG91 (OLD SIMPLE VERSION)
 // ============================================
 async function sendSMS(phone, guestName, eventName, eventDate, eventVenue, qrCodeURL) {
   console.log('📱 sendSMS called with:', { phone, guestName, eventName });
@@ -130,7 +132,6 @@ async function sendSMS(phone, guestName, eventName, eventDate, eventVenue, qrCod
     return { success: false, error: 'MSG91 not configured' };
   }
 
-  const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID;
   if (!MSG91_TEMPLATE_ID) {
     console.error('⚠️ MSG91 Template ID not configured');
     return { success: false, error: 'MSG91 Template not configured' };
@@ -176,6 +177,80 @@ async function sendSMS(phone, guestName, eventName, eventDate, eventVenue, qrCod
   } catch (error) {
     console.error('❌ MSG91 Error:', error.response?.data || error.message);
     console.error('Full error:', JSON.stringify(error.response?.data, null, 2));
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================
+// SMS INVITATION HELPER (NEW - FOR BULK INVITATIONS)
+// ============================================
+async function sendSMSInvitation(guest, event) {
+  console.log(`📱 Sending SMS invitation to: ${guest.phone} (${guest.name})`);
+  
+  if (!MSG91_AUTH_KEY || !MSG91_TEMPLATE_ID) {
+    console.error('⚠️ MSG91 not configured');
+    return { success: false, error: 'MSG91 not configured' };
+  }
+  
+  try {
+    // Format phone number - add country code if missing
+    let cleanPhone = guest.phone.replace(/[\s\-\+]/g, '');
+    if (!cleanPhone.startsWith('91')) {
+      cleanPhone = '91' + cleanPhone;
+    }
+    
+    console.log(`📱 Formatted phone: ${cleanPhone}`);
+    
+    // Generate QR code URL
+    const qrCodeURL = getQRCodeURL(guest.qr_code);
+    
+    // Format date
+    const eventDate = new Date(event.date).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+    
+    // MSG91 payload
+    const msg91Payload = {
+      template_id: MSG91_TEMPLATE_ID,
+      short_url: '0',
+      recipients: [{
+        mobiles: cleanPhone,
+        var1: guest.name,
+        var2: event.name,
+        var3: eventDate,
+        var4: qrCodeURL
+      }]
+    };
+    
+    console.log('📤 MSG91 Payload:', JSON.stringify(msg91Payload, null, 2));
+    
+    // Call MSG91 API
+    const response = await axios.post(
+      'https://control.msg91.com/api/v5/flow/',
+      msg91Payload,
+      {
+        headers: {
+          'authkey': MSG91_AUTH_KEY,
+          'content-type': 'application/json'
+        }
+      }
+    );
+    
+    const result = response.data;
+    console.log('✅ MSG91 Response:', result);
+    
+    if (result.type === 'error') {
+      console.error('❌ MSG91 returned error:', result);
+      return { success: false, error: result.message };
+    }
+    
+    console.log(`✅ SMS sent successfully to ${guest.phone}`);
+    return { success: true, data: result };
+    
+  } catch (error) {
+    console.error(`❌ SMS failed for ${guest.phone}:`, error.response?.data || error.message);
     return { success: false, error: error.message };
   }
 }
@@ -293,7 +368,8 @@ app.get('/health', (req, res) => {
     timestamp: new Date(),
     supabase: SUPABASE_URL ? 'configured' : 'missing',
     sendgrid: SENDGRID_API_KEY ? 'configured' : 'missing',
-    msg91: MSG91_AUTH_KEY ? 'configured' : 'missing'
+    msg91: MSG91_AUTH_KEY ? 'configured' : 'missing',
+    msg91_template: MSG91_TEMPLATE_ID ? 'configured' : 'missing'
   });
 });
 
@@ -1082,55 +1158,90 @@ app.post('/api/events/:eventId/regenerate-all-qr', async (req, res) => {
 });
 
 // ============================================
-// INVITATION ROUTES
+// INVITATION ROUTES (UPDATED WITH SMS!)
 // ============================================
 
 app.post('/api/invitations/send', async (req, res) => {
   try {
     const { event_id, channels } = req.body;
     
-    const { data: event } = await supabase
+    console.log('📧 Sending invitations for event:', event_id);
+    console.log('📧 Channels selected:', channels);
+    
+    // Get event details
+    const { data: event, error: eventError } = await supabase
       .from('events')
       .select('*')
       .eq('id', event_id)
       .single();
     
-    const { data: guests } = await supabase
+    if (eventError) throw eventError;
+    
+    console.log('📧 Event:', event.name);
+    
+    // Get all guests for this event
+    const { data: guests, error: guestsError } = await supabase
       .from('guests')
       .select('*')
       .eq('event_id', event_id);
+    
+    if (guestsError) throw guestsError;
+    
+    console.log(`📧 Found ${guests.length} guests`);
     
     const results = {
       email: { sent: 0, failed: 0 },
       sms: { sent: 0, failed: 0 }
     };
     
+    // Send invitations to each guest
     for (const guest of guests) {
+      console.log(`\n📧 Processing guest: ${guest.name}`);
+      
       const qrCodeURL = getQRCodeURL(guest.qr_code);
       
+      // SEND EMAIL (if selected and guest has email)
       if (channels.email && guest.email) {
+        console.log(`📧 Sending email to: ${guest.email}`);
         const emailHTML = getInvitationEmailHTML(guest, event, qrCodeURL);
         const emailResult = await sendEmail(
           guest.email,
           `You're invited to ${event.name}`,
           emailHTML
         );
-        if (emailResult.success) results.email.sent++;
-        else results.email.failed++;
+        
+        if (emailResult.success) {
+          results.email.sent++;
+          console.log(`✅ Email sent to ${guest.email}`);
+        } else {
+          results.email.failed++;
+          console.error(`❌ Email failed for ${guest.email}`);
+        }
       }
       
+      // SEND SMS (if selected and guest has phone) ← THIS WAS BROKEN, NOW FIXED!
       if (channels.sms && guest.phone) {
-        const smsMessage = `You're invited to ${event.name} on ${event.date}! View your QR code: ${qrCodeURL}`;
-        const smsResult = await sendSMS(guest.phone, smsMessage);
-        if (smsResult.success) results.sms.sent++;
-        else results.sms.failed++;
+        console.log(`📱 Sending SMS to: ${guest.phone}`);
+        const smsResult = await sendSMSInvitation(guest, event);
+        
+        if (smsResult.success) {
+          results.sms.sent++;
+          console.log(`✅ SMS sent to ${guest.phone}`);
+        } else {
+          results.sms.failed++;
+          console.error(`❌ SMS failed for ${guest.phone}:`, smsResult.error);
+        }
       }
       
+      // Small delay to avoid rate limiting
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     
+    console.log('\n📊 Final Results:', results);
+    
     res.json({ success: true, results });
   } catch (error) {
+    console.error('❌ Send invitations error:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -1728,4 +1839,5 @@ app.listen(PORT, () => {
   console.log(`✅ Supabase: ${SUPABASE_URL ? 'Configured' : 'Missing'}`);
   console.log(`✅ SendGrid: ${SENDGRID_API_KEY ? 'Configured' : 'Missing'}`);
   console.log(`✅ MSG91: ${MSG91_AUTH_KEY ? 'Configured' : 'Missing'}`);
+  console.log(`✅ MSG91 Template: ${MSG91_TEMPLATE_ID ? 'Configured' : 'Missing'}`);
 });
