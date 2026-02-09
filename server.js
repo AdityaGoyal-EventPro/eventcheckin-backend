@@ -1,5 +1,5 @@
 // ============================================
-// EVENT CHECK-IN PRO - BACKEND API (UPDATED WITH SMS)
+// EVENT CHECK-IN PRO - BACKEND API (FIXED MSG91)
 // ============================================
 
 const express = require('express');
@@ -30,9 +30,6 @@ console.log('MSG91_TEMPLATE_ID:', process.env.MSG91_TEMPLATE_ID ? '✅ Set' : '�
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
-const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
-const MSG91_SENDER_ID = process.env.MSG91_SENDER_ID;
-const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID;
 
 // Validate required variables
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -122,75 +119,38 @@ async function sendEmail(to, subject, htmlContent) {
 }
 
 // ============================================
-// SMS SERVICE - MSG91 (OLD SIMPLE VERSION)
-// ============================================
-async function sendSMS(phone, guestName, eventName, eventDate, eventVenue, qrCodeURL) {
-  console.log('📱 sendSMS called with:', { phone, guestName, eventName });
-  
-  if (!MSG91_AUTH_KEY || !MSG91_SENDER_ID) {
-    console.error('⚠️ MSG91 not configured - skipping SMS');
-    return { success: false, error: 'MSG91 not configured' };
-  }
-
-  if (!MSG91_TEMPLATE_ID) {
-    console.error('⚠️ MSG91 Template ID not configured');
-    return { success: false, error: 'MSG91 Template not configured' };
-  }
-
-  console.log('✅ MSG91 configured, Template ID:', MSG91_TEMPLATE_ID);
-
-  try {
-    // Clean phone number (remove non-digits)
-    const cleanPhone = phone.replace(/[^0-9]/g, '');
-    
-    // MSG91 template variables
-    const payload = {
-      template_id: MSG91_TEMPLATE_ID,
-      short_url: '0',
-      recipients: [
-        {
-          mobiles: cleanPhone,
-          var1: guestName,
-          var2: eventName,
-          var3: eventDate,
-          var4: eventVenue,
-          var5: qrCodeURL
-        }
-      ]
-    };
-
-    console.log('📤 Sending to MSG91:', JSON.stringify(payload, null, 2));
-
-    const response = await axios.post(
-      'https://control.msg91.com/api/v5/flow/',
-      payload,
-      {
-        headers: {
-          'authkey': MSG91_AUTH_KEY,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    console.log('✅ MSG91 response:', response.data);
-    return { success: true, data: response.data };
-  } catch (error) {
-    console.error('❌ MSG91 Error:', error.response?.data || error.message);
-    console.error('Full error:', JSON.stringify(error.response?.data, null, 2));
-    return { success: false, error: error.message };
-  }
-}
-
-// ============================================
-// SMS INVITATION HELPER (NEW - FOR BULK INVITATIONS)
+// SMS SERVICE - MSG91 (FIXED VERSION!)
 // ============================================
 async function sendSMSInvitation(guest, event) {
-  console.log(`📱 Sending SMS invitation to: ${guest.phone} (${guest.name})`);
+  console.log(`\n📱 === Starting SMS Send Process ===`);
+  console.log(`📱 Guest: ${guest.name}`);
+  console.log(`📱 Phone: ${guest.phone}`);
+  console.log(`📱 Event: ${event.name}`);
   
-  if (!MSG91_AUTH_KEY || !MSG91_TEMPLATE_ID) {
-    console.error('⚠️ MSG91 not configured');
-    return { success: false, error: 'MSG91 not configured' };
+  // ✅ FIX: Check process.env DIRECTLY, not constants!
+  console.log(`\n🔍 Checking MSG91 Configuration...`);
+  console.log(`MSG91_AUTH_KEY in env: ${!!process.env.MSG91_AUTH_KEY}`);
+  console.log(`MSG91_TEMPLATE_ID in env: ${!!process.env.MSG91_TEMPLATE_ID}`);
+  
+  if (process.env.MSG91_AUTH_KEY) {
+    console.log(`✅ AUTH_KEY found: ${process.env.MSG91_AUTH_KEY.substring(0, 10)}...`);
+  } else {
+    console.error(`❌ MSG91_AUTH_KEY is missing from environment`);
   }
+  
+  if (process.env.MSG91_TEMPLATE_ID) {
+    console.log(`✅ TEMPLATE_ID found: ${process.env.MSG91_TEMPLATE_ID}`);
+  } else {
+    console.error(`❌ MSG91_TEMPLATE_ID is missing from environment`);
+  }
+  
+  // Check if MSG91 is configured - use process.env directly!
+  if (!process.env.MSG91_AUTH_KEY || !process.env.MSG91_TEMPLATE_ID) {
+    console.error('⚠️ MSG91 not configured');
+    throw new Error('MSG91 not configured');
+  }
+  
+  console.log('✅ MSG91 is configured!');
   
   try {
     // Format phone number - add country code if missing
@@ -198,7 +158,6 @@ async function sendSMSInvitation(guest, event) {
     if (!cleanPhone.startsWith('91')) {
       cleanPhone = '91' + cleanPhone;
     }
-    
     console.log(`📱 Formatted phone: ${cleanPhone}`);
     
     // Generate QR code URL
@@ -211,9 +170,9 @@ async function sendSMSInvitation(guest, event) {
       year: 'numeric'
     });
     
-    // MSG91 payload
+    // MSG91 payload - use process.env directly!
     const msg91Payload = {
-      template_id: MSG91_TEMPLATE_ID,
+      template_id: process.env.MSG91_TEMPLATE_ID,
       short_url: '0',
       recipients: [{
         mobiles: cleanPhone,
@@ -224,34 +183,38 @@ async function sendSMSInvitation(guest, event) {
       }]
     };
     
-    console.log('📤 MSG91 Payload:', JSON.stringify(msg91Payload, null, 2));
+    console.log('\n📤 MSG91 Payload:', JSON.stringify(msg91Payload, null, 2));
     
-    // Call MSG91 API
+    // Call MSG91 API - use process.env directly!
+    console.log('📱 Calling MSG91 API...');
     const response = await axios.post(
       'https://control.msg91.com/api/v5/flow/',
       msg91Payload,
       {
         headers: {
-          'authkey': MSG91_AUTH_KEY,
+          'authkey': process.env.MSG91_AUTH_KEY,
           'content-type': 'application/json'
         }
       }
     );
     
     const result = response.data;
-    console.log('✅ MSG91 Response:', result);
+    console.log('\n📱 MSG91 Response Status:', response.status);
+    console.log('📱 MSG91 Response:', JSON.stringify(result, null, 2));
     
     if (result.type === 'error') {
       console.error('❌ MSG91 returned error:', result);
-      return { success: false, error: result.message };
+      throw new Error(result.message || 'MSG91 API error');
     }
     
     console.log(`✅ SMS sent successfully to ${guest.phone}`);
+    console.log(`📱 === SMS Send Complete ===\n`);
+    
     return { success: true, data: result };
     
   } catch (error) {
     console.error(`❌ SMS failed for ${guest.phone}:`, error.response?.data || error.message);
-    return { success: false, error: error.message };
+    throw error;
   }
 }
 
@@ -368,8 +331,8 @@ app.get('/health', (req, res) => {
     timestamp: new Date(),
     supabase: SUPABASE_URL ? 'configured' : 'missing',
     sendgrid: SENDGRID_API_KEY ? 'configured' : 'missing',
-    msg91: MSG91_AUTH_KEY ? 'configured' : 'missing',
-    msg91_template: MSG91_TEMPLATE_ID ? 'configured' : 'missing'
+    msg91: process.env.MSG91_AUTH_KEY ? 'configured' : 'missing',
+    msg91_template: process.env.MSG91_TEMPLATE_ID ? 'configured' : 'missing'
   });
 });
 
@@ -475,7 +438,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ============================================
-// EVENT ROUTES (UPDATED - NEW ENDPOINT ADDED)
+// EVENT ROUTES
 // ============================================
 
 app.post('/api/events', async (req, res) => {
@@ -519,7 +482,7 @@ app.post('/api/events', async (req, res) => {
   }
 });
 
-// 🆕 NEW: Get all events (for venue dashboard)
+// Get all events (for venue dashboard)
 app.get('/api/events', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -1158,15 +1121,18 @@ app.post('/api/events/:eventId/regenerate-all-qr', async (req, res) => {
 });
 
 // ============================================
-// INVITATION ROUTES (UPDATED WITH SMS!)
+// INVITATION ROUTES (FIXED WITH SMS!)
 // ============================================
 
 app.post('/api/invitations/send', async (req, res) => {
   try {
     const { event_id, channels } = req.body;
     
-    console.log('📧 Sending invitations for event:', event_id);
-    console.log('📧 Channels selected:', channels);
+    console.log('\n📧 ============================================');
+    console.log('📧 BULK INVITATIONS REQUEST');
+    console.log('📧 ============================================');
+    console.log('📧 Event ID:', event_id);
+    console.log('📧 Channels:', channels);
     
     // Get event details
     const { data: event, error: eventError } = await supabase
@@ -1202,34 +1168,38 @@ app.post('/api/invitations/send', async (req, res) => {
       
       // SEND EMAIL (if selected and guest has email)
       if (channels.email && guest.email) {
-        console.log(`📧 Sending email to: ${guest.email}`);
-        const emailHTML = getInvitationEmailHTML(guest, event, qrCodeURL);
-        const emailResult = await sendEmail(
-          guest.email,
-          `You're invited to ${event.name}`,
-          emailHTML
-        );
-        
-        if (emailResult.success) {
-          results.email.sent++;
-          console.log(`✅ Email sent to ${guest.email}`);
-        } else {
+        try {
+          console.log(`📧 Sending email to: ${guest.email}`);
+          const emailHTML = getInvitationEmailHTML(guest, event, qrCodeURL);
+          const emailResult = await sendEmail(
+            guest.email,
+            `You're invited to ${event.name}`,
+            emailHTML
+          );
+          
+          if (emailResult.success) {
+            results.email.sent++;
+            console.log(`✅ Email sent to ${guest.email}`);
+          } else {
+            results.email.failed++;
+            console.error(`❌ Email failed for ${guest.email}`);
+          }
+        } catch (error) {
           results.email.failed++;
-          console.error(`❌ Email failed for ${guest.email}`);
+          console.error(`❌ Email error for ${guest.email}:`, error.message);
         }
       }
       
-      // SEND SMS (if selected and guest has phone) ← THIS WAS BROKEN, NOW FIXED!
+      // SEND SMS (if selected and guest has phone) ✅ FIXED!
       if (channels.sms && guest.phone) {
-        console.log(`📱 Sending SMS to: ${guest.phone}`);
-        const smsResult = await sendSMSInvitation(guest, event);
-        
-        if (smsResult.success) {
+        try {
+          console.log(`📱 Sending SMS to: ${guest.phone}`);
+          await sendSMSInvitation(guest, event);
           results.sms.sent++;
           console.log(`✅ SMS sent to ${guest.phone}`);
-        } else {
+        } catch (error) {
           results.sms.failed++;
-          console.error(`❌ SMS failed for ${guest.phone}:`, smsResult.error);
+          console.error(`❌ SMS failed for ${guest.phone}:`, error.message);
         }
       }
       
@@ -1238,6 +1208,7 @@ app.post('/api/invitations/send', async (req, res) => {
     }
     
     console.log('\n📊 Final Results:', results);
+    console.log('📧 ============================================\n');
     
     res.json({ success: true, results });
   } catch (error) {
@@ -1765,79 +1736,32 @@ function formatLogMessage(log) {
 }
 
 // ============================================
-// TEST EMAIL ENDPOINT - FOR DEBUGGING
+// DEBUG ENDPOINT - CHECK MSG91 CONFIG
 // ============================================
-app.get('/api/test-email', async (req, res) => {
-  console.log('\n🔍 EMAIL TEST STARTED');
-  console.log('='.repeat(50));
-  
-  // Check environment variables
-  console.log('Environment Check:');
-  console.log('  SENDGRID_API_KEY:', SENDGRID_API_KEY ? '✅ SET (' + SENDGRID_API_KEY.substring(0, 10) + '...)' : '❌ MISSING');
-  console.log('  SENDGRID_FROM_EMAIL:', process.env.SENDGRID_FROM_EMAIL || '❌ MISSING');
-  
-  if (!SENDGRID_API_KEY) {
-    return res.json({
-      success: false,
-      error: 'SENDGRID_API_KEY not set in Railway environment variables',
-      help: 'Go to Railway → Variables → Add SENDGRID_API_KEY'
-    });
-  }
-
-  if (!process.env.SENDGRID_FROM_EMAIL) {
-    return res.json({
-      success: false,
-      error: 'SENDGRID_FROM_EMAIL not set',
-      help: 'Go to Railway → Variables → Add SENDGRID_FROM_EMAIL (e.g., noreply@yourdomain.com)'
-    });
-  }
-
-  console.log('\n📧 Attempting to send test email...');
-  
-  try {
-    const testEmail = req.query.to || 'test@example.com';
-    console.log('  To:', testEmail);
-    console.log('  From:', process.env.SENDGRID_FROM_EMAIL);
-    
-    const result = await sendEmail(
-      testEmail,
-      'Test Email from Event Check-In Pro',
-      '<h1>🎉 Success!</h1><p>If you\'re reading this, SendGrid is working correctly!</p><p>Event Check-In Pro email system is operational.</p>'
-    );
-    
-    console.log('\n✅ Test Result:', result);
-    console.log('='.repeat(50));
-    
-    return res.json({
-      success: result.success,
-      message: result.success 
-        ? 'Test email sent successfully! Check your inbox.' 
-        : 'Failed to send email. Check logs above.',
-      details: result,
-      instructions: result.success 
-        ? 'Email should arrive in 1-2 minutes. Check spam folder if not in inbox.'
-        : 'Check Railway logs for detailed error message.'
-    });
-    
-  } catch (error) {
-    console.error('\n❌ Test Failed:', error.message);
-    console.log('='.repeat(50));
-    
-    return res.json({
-      success: false,
-      error: error.message,
-      details: error.response?.data
-    });
-  }
+app.get('/api/debug/msg91', (req, res) => {
+  res.json({
+    status: (process.env.MSG91_AUTH_KEY && process.env.MSG91_TEMPLATE_ID) ? 
+      '✅ MSG91 Configured' : 
+      '❌ MSG91 Not Configured',
+    MSG91_AUTH_KEY: process.env.MSG91_AUTH_KEY ? 
+      `✅ Set: ${process.env.MSG91_AUTH_KEY.substring(0, 10)}...` : 
+      '❌ MISSING',
+    MSG91_TEMPLATE_ID: process.env.MSG91_TEMPLATE_ID ? 
+      `✅ Set: ${process.env.MSG91_TEMPLATE_ID}` : 
+      '❌ MISSING',
+    MSG91_SENDER_ID: process.env.MSG91_SENDER_ID || 'Not set (optional)',
+    MSG91_ROUTE: process.env.MSG91_ROUTE || 'Not set (optional)'
+  });
 });
 
 // ============================================
 // START SERVER
 // ============================================
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`\n🚀 Server running on port ${PORT}`);
   console.log(`✅ Supabase: ${SUPABASE_URL ? 'Configured' : 'Missing'}`);
   console.log(`✅ SendGrid: ${SENDGRID_API_KEY ? 'Configured' : 'Missing'}`);
-  console.log(`✅ MSG91: ${MSG91_AUTH_KEY ? 'Configured' : 'Missing'}`);
-  console.log(`✅ MSG91 Template: ${MSG91_TEMPLATE_ID ? 'Configured' : 'Missing'}`);
+  console.log(`✅ MSG91: ${process.env.MSG91_AUTH_KEY ? 'Configured' : 'Missing'}`);
+  console.log(`✅ MSG91 Template: ${process.env.MSG91_TEMPLATE_ID ? 'Configured' : 'Missing'}`);
+  console.log(`\n📱 Debug endpoint: GET /api/debug/msg91\n`);
 });
