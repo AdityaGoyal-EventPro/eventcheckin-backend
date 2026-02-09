@@ -22,6 +22,7 @@ app.use(express.json());
 console.log('🔍 Checking environment variables...');
 console.log('SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing');
 console.log('SUPABASE_KEY:', process.env.SUPABASE_KEY ? '✅ Set' : '❌ Missing');
+console.log('SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing');
 console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('MSG91_AUTH_KEY:', process.env.MSG91_AUTH_KEY ? '✅ Set' : '❌ Missing');
 console.log('MSG91_SENDER_ID:', process.env.MSG91_SENDER_ID ? '✅ Set' : '❌ Missing');
@@ -46,6 +47,25 @@ try {
 } catch (error) {
   console.error('❌ Failed to initialize Supabase:', error.message);
   process.exit(1);
+}
+
+// ✅ ADDED: Initialize Supabase Admin Client (for password reset)
+let supabaseAdmin;
+try {
+  supabaseAdmin = createClient(
+    SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    }
+  );
+  console.log('✅ Supabase admin client initialized');
+} catch (error) {
+  console.error('⚠️ Failed to initialize Supabase admin client:', error.message);
+  // Don't exit - will fall back to regular client
 }
 
 // ============================================
@@ -333,6 +353,7 @@ app.get('/health', (req, res) => {
     status: 'OK', 
     timestamp: new Date(),
     supabase: SUPABASE_URL ? 'configured' : 'missing',
+    supabase_admin: process.env.SUPABASE_SERVICE_ROLE_KEY ? 'configured' : 'missing',
     sendgrid: SENDGRID_API_KEY ? 'configured' : 'missing',
     msg91: process.env.MSG91_AUTH_KEY ? 'configured' : 'missing',
     msg91_template: process.env.MSG91_TEMPLATE_ID ? 'configured' : 'missing'
@@ -629,11 +650,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// ============================================
-// REPLACE LINES 632-697 in server.js with this:
-// ============================================
-
-// Reset password with token
+// ✅ FIXED: Reset password with token (using admin client)
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body;
@@ -669,20 +686,31 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
     console.log('✅ Token valid for user:', user.email);
 
-    // ✅ FIXED: Update password directly in users table
-    // (No Supabase Auth admin needed - we store passwords in users table)
+    // ✅ FIXED: Use admin client to update password in Supabase Auth
+    const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(
+      user.id,
+      { password: newPassword }
+    );
+
+    if (authError) {
+      console.error('❌ Error updating auth password:', authError);
+      throw authError;
+    }
+
+    console.log('✅ Supabase Auth password updated');
+
+    // Clear reset token
     const { error: updateError } = await supabase
       .from('users')
       .update({ 
-        password: newPassword,        // Update password
-        reset_token: null,            // Clear reset token
-        reset_token_expiry: null      // Clear expiry
+        reset_token: null,
+        reset_token_expiry: null
       })
       .eq('id', user.id);
 
     if (updateError) {
-      console.error('❌ Error updating password:', updateError);
-      throw updateError;
+      console.error('⚠️ Error clearing token (password was updated):', updateError);
+      // Don't throw - password was already updated successfully
     }
 
     console.log('✅ Password reset successful for:', user.email);
@@ -1908,7 +1936,13 @@ app.post('/api/admin/users/:userId/reject', requireAdmin, async (req, res) => {
     
     // Delete the user and auth record
     await supabase.from('users').delete().eq('id', userId);
-    await supabase.auth.admin.deleteUser(userId);
+    
+    // Try to delete from auth (may fail if service role key not available)
+    try {
+      await supabaseAdmin.auth.admin.deleteUser(userId);
+    } catch (authError) {
+      console.error('⚠️ Could not delete auth user (service role key may be missing):', authError);
+    }
     
     // Log the action
     await supabase.from('admin_logs').insert({
@@ -2073,6 +2107,7 @@ app.get('/api/debug/msg91', (req, res) => {
 app.listen(PORT, () => {
   console.log(`\n🚀 Server running on port ${PORT}`);
   console.log(`✅ Supabase: ${SUPABASE_URL ? 'Configured' : 'Missing'}`);
+  console.log(`✅ Supabase Admin: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? 'Configured' : 'Missing'}`);
   console.log(`✅ SendGrid: ${SENDGRID_API_KEY ? 'Configured' : 'Missing'}`);
   console.log(`✅ MSG91: ${process.env.MSG91_AUTH_KEY ? 'Configured' : 'Missing'}`);
   console.log(`✅ MSG91 Template: ${process.env.MSG91_TEMPLATE_ID ? 'Configured' : 'Missing'}`);
