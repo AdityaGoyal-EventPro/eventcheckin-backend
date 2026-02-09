@@ -1,5 +1,5 @@
 // ============================================
-// EVENT CHECK-IN PRO - BACKEND API (FIXED MSG91)
+// EVENT CHECK-IN PRO - BACKEND API (WITH HOST APPROVAL)
 // ============================================
 
 const express = require('express');
@@ -183,6 +183,11 @@ async function sendSMSInvitation(guest, event) {
       }]
     };
     
+    // Add DLT Template ID if available
+    if (process.env.MSG91_DLT_TEMPLATE_ID) {
+      msg91Payload.DLT_TE_ID = process.env.MSG91_DLT_TEMPLATE_ID;
+    }
+    
     console.log('\n📤 MSG91 Payload:', JSON.stringify(msg91Payload, null, 2));
     
     // Call MSG91 API - use process.env directly!
@@ -219,8 +224,9 @@ async function sendSMSInvitation(guest, event) {
 }
 
 // ============================================
-// EMAIL TEMPLATE
+// EMAIL TEMPLATES
 // ============================================
+
 function getInvitationEmailHTML(guest, event, qrCodeURL) {
   return `
 <!DOCTYPE html>
@@ -264,9 +270,6 @@ function getInvitationEmailHTML(guest, event, qrCodeURL) {
   `;
 }
 
-// ============================================
-// INVITE EMAIL TEMPLATE
-// ============================================
 function getInviteEmailHTML(name, inviteUrl, role, venueId) {
   const roleText = role === 'venue' ? 'Venue Staff' : role === 'admin' ? 'Administrator' : 'Event Host';
   
@@ -336,7 +339,10 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Auth routes
+// ============================================
+// AUTH ROUTES - UPDATED WITH HOST APPROVAL!
+// ============================================
+
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { email, password, name, phone, role, venue_id } = req.body;
@@ -365,8 +371,8 @@ app.post('/api/auth/signup', async (req, res) => {
       venue_name = venueData?.name || null;
     }
     
-    // Set status: 'pending' for venue users, 'active' for hosts
-    const status = role === 'venue' ? 'pending' : 'active';
+    // ✅ CHANGED: Both hosts AND venue users now need approval
+    const status = (role === 'host' || role === 'venue') ? 'pending' : 'active';
     
     const { data: userData, error: userError } = await supabase
       .from('users')
@@ -385,16 +391,56 @@ app.post('/api/auth/signup', async (req, res) => {
     
     if (userError) throw userError;
     
-    // Send notification email to venue users
-    if (role === 'venue' && process.env.SENDGRID_API_KEY) {
+    // ✅ CHANGED: Send pending email to BOTH hosts and venue users
+    if ((role === 'host' || role === 'venue') && process.env.SENDGRID_API_KEY) {
+      const accountType = role === 'host' ? 'Event Host' : 'Venue Manager';
+      
       const emailHTML = `
-        <h2>Account Pending Approval</h2>
-        <p>Hi ${name},</p>
-        <p>Your venue manager account has been created and is pending admin approval.</p>
-        <p><strong>Venue:</strong> ${venue_name}</p>
-        <p><strong>Status:</strong> Pending ⏳</p>
-        <p>You'll receive an email notification once your account is approved.</p>
-        <p>Thank you,<br>Event Check-In Pro Team</p>
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .info-box { background: white; border-left: 4px solid #667eea; padding: 15px; margin: 20px 0; }
+            .status { display: inline-block; padding: 8px 16px; background: #ffa500; color: white; border-radius: 20px; font-weight: bold; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>⏳ Account Pending Approval</h1>
+            </div>
+            <div class="content">
+              <p>Hi <strong>${name}</strong>,</p>
+              <p>Thank you for registering with Event Check-In Pro!</p>
+              
+              <div class="info-box">
+                <p><strong>Account Type:</strong> ${accountType}</p>
+                ${role === 'venue' ? `<p><strong>Venue:</strong> ${venue_name}</p>` : ''}
+                <p><strong>Status:</strong> <span class="status">Pending Approval</span></p>
+              </div>
+              
+              <p>Your account has been created and is currently pending admin approval. This is a security measure to ensure the quality of our platform.</p>
+              
+              <p><strong>What happens next?</strong></p>
+              <ul>
+                <li>Our admin team will review your account</li>
+                <li>You'll receive an email notification once approved (usually within 24-48 hours)</li>
+                <li>After approval, you can login and start managing events</li>
+              </ul>
+              
+              <p>If you have any questions, please contact our support team.</p>
+              
+              <p>Thank you for your patience!<br>
+              <strong>Event Check-In Pro Team</strong></p>
+            </div>
+          </div>
+        </body>
+        </html>
       `;
       
       await sendEmail(
@@ -404,12 +450,19 @@ app.post('/api/auth/signup', async (req, res) => {
       );
     }
     
-    res.json({ success: true, user: userData });
+    res.json({ 
+      success: true, 
+      user: userData,
+      message: role === 'host' || role === 'venue' 
+        ? 'Account created! Pending admin approval. Check your email for details.' 
+        : 'Account created successfully!'
+    });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
 });
 
+// ✅ UPDATED: Login now checks if user is approved
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -426,6 +479,23 @@ app.post('/api/auth/login', async (req, res) => {
       .select('*')
       .eq('id', data.user.id)
       .single();
+    
+    // ✅ CHANGED: Check if account is approved
+    if (userData && userData.status === 'pending') {
+      return res.status(403).json({ 
+        error: 'Account pending approval',
+        message: 'Your account is awaiting admin approval. You will receive an email once approved.',
+        status: 'pending'
+      });
+    }
+    
+    if (userData && userData.status === 'rejected') {
+      return res.status(403).json({ 
+        error: 'Account rejected',
+        message: 'Your account registration was not approved. Please contact support for more information.',
+        status: 'rejected'
+      });
+    }
     
     res.json({ 
       success: true, 
@@ -1524,22 +1594,69 @@ app.post('/api/admin/users/:userId/approve', requireAdmin, async (req, res) => {
     
     if (error) throw error;
     
+    // Determine account type for email
+    const accountType = user.role === 'host' ? 'Event Host' : 'Venue Manager';
+    
     // Send approval email
     if (process.env.SENDGRID_API_KEY && user.email) {
       const emailHTML = `
-        <h2>✅ Account Approved!</h2>
-        <p>Hi ${user.name},</p>
-        <p>Great news! Your venue manager account has been approved.</p>
-        <p><strong>Venue:</strong> ${user.venue_name || 'N/A'}</p>
-        <p><strong>Status:</strong> Active ✅</p>
-        <p>You can now login and access your venue dashboard.</p>
-        <p><a href="${process.env.FRONTEND_URL || 'https://your-app.vercel.app'}" style="background: #6366f1; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; margin-top: 16px;">Login Now</a></p>
-        <p>Thank you,<br>Event Check-In Pro Team</p>
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .info-box { background: white; border-left: 4px solid #4caf50; padding: 15px; margin: 20px 0; }
+            .status { display: inline-block; padding: 8px 16px; background: #4caf50; color: white; border-radius: 20px; font-weight: bold; }
+            .button { display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin-top: 20px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>✅ Account Approved!</h1>
+            </div>
+            <div class="content">
+              <p>Hi <strong>${user.name}</strong>,</p>
+              <p>Great news! Your account has been approved and is now active.</p>
+              
+              <div class="info-box">
+                <p><strong>Account Type:</strong> ${accountType}</p>
+                ${user.role === 'venue' ? `<p><strong>Venue:</strong> ${user.venue_name || 'N/A'}</p>` : ''}
+                <p><strong>Status:</strong> <span class="status">Active ✅</span></p>
+              </div>
+              
+              <p><strong>What you can do now:</strong></p>
+              <ul>
+                <li>Login to your dashboard</li>
+                <li>${user.role === 'host' ? 'Create and manage events' : 'View events at your venue'}</li>
+                <li>Manage guest lists</li>
+                <li>Send invitations</li>
+                <li>Track check-ins in real-time</li>
+              </ul>
+              
+              <div style="text-align: center;">
+                <a href="${process.env.FRONTEND_URL || 'https://your-app.vercel.app'}/login" class="button">
+                  Login to Dashboard
+                </a>
+              </div>
+              
+              <p style="margin-top: 30px;">If you have any questions, please don't hesitate to contact us.</p>
+              
+              <p>Welcome to Event Check-In Pro!<br>
+              <strong>The Team</strong></p>
+            </div>
+          </div>
+        </body>
+        </html>
       `;
       
       await sendEmail(
         user.email,
-        'Account Approved - Event Check-In Pro',
+        '✅ Account Approved - Event Check-In Pro',
         emailHTML
       );
     }
@@ -1550,7 +1667,7 @@ app.post('/api/admin/users/:userId/approve', requireAdmin, async (req, res) => {
       action: 'USER_APPROVED',
       target_type: 'user',
       target_id: userId,
-      details: { name: user.name, email: user.email }
+      details: { name: user.name, email: user.email, role: user.role }
     });
     
     res.json({ success: true, user });
@@ -1583,7 +1700,7 @@ app.post('/api/admin/users/:userId/reject', requireAdmin, async (req, res) => {
         <h2>Account Application Update</h2>
         <p>Hi ${user.name},</p>
         <p>Thank you for your interest in Event Check-In Pro.</p>
-        <p>Unfortunately, we're unable to approve your venue manager account at this time.</p>
+        <p>Unfortunately, we're unable to approve your account application at this time.</p>
         ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
         <p>If you believe this is an error or have questions, please contact support.</p>
         <p>Thank you,<br>Event Check-In Pro Team</p>
@@ -1726,6 +1843,8 @@ app.delete('/api/admin/venues/:venueId', requireAdmin, async (req, res) => {
 function formatLogMessage(log) {
   const actions = {
     'USER_UPDATED': `User ${log.target_id} was updated`,
+    'USER_APPROVED': `User "${log.details?.name}" was approved`,
+    'USER_REJECTED': `User "${log.details?.name}" was rejected`,
     'VENUE_CREATED': `New venue "${log.details?.name}" was created`,
     'VENUE_UPDATED': `Venue "${log.details?.name}" was updated`,
     'VENUE_DELETED': `Venue was deleted`,
@@ -1750,7 +1869,8 @@ app.get('/api/debug/msg91', (req, res) => {
       `✅ Set: ${process.env.MSG91_TEMPLATE_ID}` : 
       '❌ MISSING',
     MSG91_SENDER_ID: process.env.MSG91_SENDER_ID || 'Not set (optional)',
-    MSG91_ROUTE: process.env.MSG91_ROUTE || 'Not set (optional)'
+    MSG91_ROUTE: process.env.MSG91_ROUTE || 'Not set (optional)',
+    MSG91_DLT_TEMPLATE_ID: process.env.MSG91_DLT_TEMPLATE_ID || 'Not set (optional)'
   });
 });
 
@@ -1763,5 +1883,6 @@ app.listen(PORT, () => {
   console.log(`✅ SendGrid: ${SENDGRID_API_KEY ? 'Configured' : 'Missing'}`);
   console.log(`✅ MSG91: ${process.env.MSG91_AUTH_KEY ? 'Configured' : 'Missing'}`);
   console.log(`✅ MSG91 Template: ${process.env.MSG91_TEMPLATE_ID ? 'Configured' : 'Missing'}`);
-  console.log(`\n📱 Debug endpoint: GET /api/debug/msg91\n`);
+  console.log(`\n📱 Debug endpoint: GET /api/debug/msg91`);
+  console.log(`\n⚠️  HOST APPROVAL: Hosts now require admin approval before login\n`);
 });
