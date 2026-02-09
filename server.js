@@ -1,11 +1,12 @@
 // ============================================
-// EVENT CHECK-IN PRO - BACKEND API (WITH HOST APPROVAL)
+// EVENT CHECK-IN PRO - BACKEND API (WITH HOST APPROVAL + FORGOT PASSWORD)
 // ============================================
 
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
+const bcrypt = require('bcrypt');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -340,7 +341,7 @@ app.get('/health', (req, res) => {
 });
 
 // ============================================
-// AUTH ROUTES - UPDATED WITH HOST APPROVAL!
+// AUTH ROUTES - UPDATED WITH HOST APPROVAL + FORGOT PASSWORD!
 // ============================================
 
 app.post('/api/auth/signup', async (req, res) => {
@@ -504,6 +505,198 @@ app.post('/api/auth/login', async (req, res) => {
     });
   } catch (error) {
     res.status(401).json({ error: error.message });
+  }
+});
+
+// ============================================
+// 🔐 FORGOT PASSWORD ENDPOINTS - NEW!
+// ============================================
+
+// Forgot password - send reset link
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    console.log('🔐 Forgot password request for:', email);
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Check if user exists
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, name, email')
+      .eq('email', email)
+      .single();
+
+    // Always return success even if user doesn't exist (security best practice)
+    if (userError || !user) {
+      console.log('User not found, but returning success for security');
+      return res.json({ 
+        success: true, 
+        message: 'If an account exists with that email, a password reset link has been sent.' 
+      });
+    }
+
+    // Generate reset token (valid for 1 hour)
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetExpiry = new Date(Date.now() + 3600000); // 1 hour from now
+
+    // Store reset token in database
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        reset_token: resetToken,
+        reset_token_expiry: resetExpiry.toISOString()
+      })
+      .eq('id', user.id);
+
+    if (updateError) {
+      console.error('Error storing reset token:', updateError);
+      throw updateError;
+    }
+
+    // Create reset link
+    const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+
+    // Send email with SendGrid
+    if (SENDGRID_API_KEY) {
+      const emailHTML = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; text-align: center;">
+            <h1 style="color: white; margin: 0;">Event Check-In Pro</h1>
+          </div>
+          
+          <div style="padding: 40px 20px; background: #f9fafb;">
+            <h2 style="color: #1f2937; margin-top: 0;">Password Reset Request</h2>
+            
+            <p style="color: #4b5563; font-size: 16px; line-height: 1.6;">
+              Hi ${user.name},
+            </p>
+            
+            <p style="color: #4b5563; font-size: 16px; line-height: 1.6;">
+              We received a request to reset your password for your Event Check-In Pro account.
+            </p>
+            
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${resetLink}" 
+                 style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                Reset Password
+              </a>
+            </div>
+            
+            <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+              This link will expire in 1 hour for security reasons.
+            </p>
+            
+            <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+              If you didn't request this password reset, you can safely ignore this email. Your password will remain unchanged.
+            </p>
+            
+            <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
+            
+            <p style="color: #9ca3af; font-size: 12px;">
+              If the button doesn't work, copy and paste this link into your browser:<br>
+              <a href="${resetLink}" style="color: #667eea; word-break: break-all;">${resetLink}</a>
+            </p>
+          </div>
+          
+          <div style="padding: 20px; text-align: center; background: #1f2937; color: #9ca3af; font-size: 12px;">
+            <p>© ${new Date().getFullYear()} Event Check-In Pro. All rights reserved.</p>
+          </div>
+        </div>
+      `;
+
+      await sendEmail(
+        user.email,
+        'Password Reset Request - Event Check-In Pro',
+        emailHTML
+      );
+      
+      console.log('✅ Password reset email sent to:', user.email);
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Password reset link has been sent to your email.' 
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ 
+      error: 'Failed to process password reset request. Please try again.' 
+    });
+  }
+});
+
+// Reset password with token
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    
+    console.log('🔐 Reset password request with token');
+    
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: 'Token and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Find user with valid token
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, reset_token_expiry')
+      .eq('reset_token', token)
+      .single();
+
+    if (userError || !user) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Check if token is expired
+    const expiryDate = new Date(user.reset_token_expiry);
+    if (expiryDate < new Date()) {
+      return res.status(400).json({ error: 'Reset token has expired. Please request a new one.' });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password in Supabase Auth
+    const { error: authError } = await supabase.auth.admin.updateUserById(
+      user.id,
+      { password: newPassword }
+    );
+
+    if (authError) {
+      console.error('Error updating auth password:', authError);
+      throw authError;
+    }
+
+    // Clear reset token
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        reset_token: null,
+        reset_token_expiry: null
+      })
+      .eq('id', user.id);
+
+    if (updateError) throw updateError;
+
+    console.log('✅ Password reset successful for:', user.email);
+
+    res.json({ 
+      success: true, 
+      message: 'Password has been reset successfully. You can now login with your new password.' 
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password. Please try again.' });
   }
 });
 
@@ -1884,5 +2077,7 @@ app.listen(PORT, () => {
   console.log(`✅ MSG91: ${process.env.MSG91_AUTH_KEY ? 'Configured' : 'Missing'}`);
   console.log(`✅ MSG91 Template: ${process.env.MSG91_TEMPLATE_ID ? 'Configured' : 'Missing'}`);
   console.log(`\n📱 Debug endpoint: GET /api/debug/msg91`);
+  console.log(`🔐 Forgot Password: POST /api/auth/forgot-password`);
+  console.log(`🔐 Reset Password: POST /api/auth/reset-password`);
   console.log(`\n⚠️  HOST APPROVAL: Hosts now require admin approval before login\n`);
 });
