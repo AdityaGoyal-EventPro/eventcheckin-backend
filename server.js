@@ -1518,6 +1518,16 @@ app.get('/api/invites/guest/:token', async (req, res) => {
 
     console.log('✅ Event found:', event.name);
 
+    // ✅ TRACK INVITATION OPENED
+    const openCount = guest.invitation_open_count || 0;
+    await supabase.from('guests').update({
+      invitation_opened: true,
+      invitation_opened_at: new Date().toISOString(),
+      invitation_open_count: openCount + 1
+    }).eq('id', guest.id);
+
+    console.log(`✅ Tracked invitation opened (count: ${openCount + 1})`);
+
     // Return invitation data
     res.json({
       guest: {
@@ -1553,13 +1563,14 @@ app.get('/api/invites/guest/:token', async (req, res) => {
 
 app.post('/api/invitations/send', async (req, res) => {
   try {
-    const { event_id, channels } = req.body;
+    const { event_id, channels, filter = 'all', guest_ids = [] } = req.body;
     
     console.log('\n📧 ============================================');
     console.log('📧 BULK INVITATIONS REQUEST');
     console.log('📧 ============================================');
     console.log('📧 Event ID:', event_id);
     console.log('📧 Channels:', channels);
+    console.log('📧 Filter:', filter);
     
     // Get event details
     const { data: event, error: eventError } = await supabase
@@ -1572,15 +1583,47 @@ app.post('/api/invitations/send', async (req, res) => {
     
     console.log('📧 Event:', event.name);
     
-    // Get all guests for this event
-    const { data: guests, error: guestsError } = await supabase
-      .from('guests')
-      .select('*')
-      .eq('event_id', event_id);
+    // ✅ GET GUESTS BASED ON FILTER
+    let guests;
+    let query = supabase.from('guests').select('*').eq('event_id', event_id);
+    
+    switch (filter) {
+      case 'not_invited':
+        query = query.or('invitation_sent.is.null,invitation_sent.eq.false');
+        break;
+      
+      case 'not_checked_in':
+        query = query.eq('checked_in', false);
+        break;
+      
+      case 'vip':
+        query = query.eq('category', 'VIP');
+        break;
+      
+      case 'general':
+        query = query.eq('category', 'General');
+        break;
+      
+      case 'custom':
+        if (guest_ids.length === 0) {
+          return res.status(400).json({ error: 'No guests selected' });
+        }
+        query = query.in('id', guest_ids);
+        break;
+      
+      case 'all':
+      default:
+        // No additional filter
+        break;
+    }
+    
+    const { data: filteredGuests, error: guestsError } = await query;
     
     if (guestsError) throw guestsError;
     
-    console.log(`📧 Found ${guests.length} guests`);
+    guests = filteredGuests;
+    
+    console.log(`📧 Found ${guests.length} guests matching filter: ${filter}`);
     
     const results = {
       email: { sent: 0, failed: 0 },
@@ -1654,6 +1697,23 @@ app.post('/api/invitations/send', async (req, res) => {
           results.sms.failed++;
           console.error(`❌ SMS failed for ${guest.phone}:`, error.message);
         }
+      }
+      
+      // ✅ TRACK INVITATION SENT (if at least one channel succeeded)
+      const emailSent = channels.email && guest.email;
+      const smsSent = channels.sms && guest.phone;
+      
+      if (emailSent || smsSent) {
+        const sentVia = emailSent && smsSent ? 'both' : 
+                       emailSent ? 'email' : 'sms';
+        
+        await supabase.from('guests').update({
+          invitation_sent: true,
+          invitation_sent_at: new Date().toISOString(),
+          invitation_sent_via: sentVia
+        }).eq('id', guest.id);
+        
+        console.log(`✅ Tracked invitation sent via ${sentVia}`);
       }
       
       // Small delay to avoid rate limiting
