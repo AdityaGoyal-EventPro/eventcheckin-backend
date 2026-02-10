@@ -247,6 +247,66 @@ async function sendSMSInvitation(guest, event) {
 // EMAIL TEMPLATES
 // ============================================
 
+function getGuestInvitationEmailHTML(guest, event, inviteUrl) {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f4f4f4;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px;">
+          <tr>
+            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; text-align: center; border-radius: 8px 8px 0 0;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">🎉 You're Invited!</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 40px 30px;">
+              <p style="font-size: 16px; color: #333;">Hi <strong>${guest.name}</strong>,</p>
+              <p style="font-size: 16px; color: #333;">You're invited to:</p>
+              
+              <div style="background-color: #f8f9fa; border-left: 4px solid #667eea; padding: 20px; margin: 20px 0;">
+                <h2 style="margin: 0 0 15px 0; color: #333;">${event.name}</h2>
+                <p style="margin: 5px 0; color: #666;">📅 ${event.date}</p>
+                <p style="margin: 5px 0; color: #666;">🕐 ${event.time_start} - ${event.time_end}</p>
+                <p style="margin: 5px 0; color: #666;">📍 ${event.venue_name}</p>
+                ${guest.category ? `<p style="margin: 5px 0; color: #666;">🎫 ${guest.category}</p>` : ''}
+                ${guest.plus_ones > 0 ? `<p style="margin: 5px 0; color: #666;">👥 +${guest.plus_ones} guests</p>` : ''}
+              </div>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${inviteUrl}" 
+                   style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                  View Your Invitation
+                </a>
+              </div>
+              
+              <p style="font-size: 14px; color: #666; text-align: center; margin-top: 30px;">
+                Your invitation includes a QR code for easy check-in at the event.
+              </p>
+              
+              <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
+              
+              <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+                If the button doesn't work, copy and paste this link:<br>
+                <a href="${inviteUrl}" style="color: #667eea; word-break: break-all;">${inviteUrl}</a>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `;
+}
+
 function getInvitationEmailHTML(guest, event, qrCodeURL) {
   return `
 <!DOCTYPE html>
@@ -1415,6 +1475,82 @@ app.post('/api/events/:eventId/regenerate-all-qr', async (req, res) => {
 // INVITATION ROUTES (FIXED WITH SMS!)
 // ============================================
 
+// Get guest invitation by token (PUBLIC - no auth required)
+app.get('/api/invites/guest/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    console.log('📨 Fetching invitation for token:', token);
+    
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    // Find guest by invite token
+    const { data: guest, error: guestError } = await supabase
+      .from('guests')
+      .select('*')
+      .eq('invite_token', token)
+      .single();
+
+    if (guestError || !guest) {
+      console.log('❌ Guest not found for token:', token);
+      return res.status(404).json({ 
+        error: 'Invalid or expired invitation link' 
+      });
+    }
+
+    console.log('✅ Guest found:', guest.name);
+
+    // Get event details
+    const { data: event, error: eventError} = await supabase
+      .from('events')
+      .select('*')
+      .eq('id', guest.event_id)
+      .single();
+
+    if (eventError || !event) {
+      console.log('❌ Event not found:', guest.event_id);
+      return res.status(404).json({ 
+        error: 'Event not found' 
+      });
+    }
+
+    console.log('✅ Event found:', event.name);
+
+    // Return invitation data
+    res.json({
+      guest: {
+        id: guest.id,
+        name: guest.name,
+        email: guest.email,
+        phone: guest.phone,
+        category: guest.category,
+        plus_ones: guest.plus_ones,
+        qr_code: guest.qr_code,
+        checked_in: guest.checked_in,
+        checked_in_time: guest.checked_in_time
+      },
+      event: {
+        id: event.id,
+        name: event.name,
+        date: event.date,
+        time_start: event.time_start,
+        time_end: event.time_end,
+        venue_name: event.venue_name,
+        venue_id: event.venue_id,
+        host_id: event.host_id
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching invitation:', error);
+    res.status(500).json({ 
+      error: 'Failed to load invitation' 
+    });
+  }
+});
+
 app.post('/api/invitations/send', async (req, res) => {
   try {
     const { event_id, channels } = req.body;
@@ -1455,13 +1591,39 @@ app.post('/api/invitations/send', async (req, res) => {
     for (const guest of guests) {
       console.log(`\n📧 Processing guest: ${guest.name}`);
       
+      // ✅ GENERATE INVITE TOKEN if not exists
+      let inviteToken = guest.invite_token;
+      if (!inviteToken) {
+        inviteToken = crypto.randomBytes(16).toString('hex');
+        
+        // Update guest with token
+        const { error: updateError } = await supabase
+          .from('guests')
+          .update({ 
+            invite_token: inviteToken,
+            invite_sent_at: new Date().toISOString()
+          })
+          .eq('id', guest.id);
+        
+        if (updateError) {
+          console.error('❌ Error saving invite token:', updateError);
+          continue;
+        }
+        
+        console.log('✅ Generated invite token:', inviteToken);
+      }
+      
+      // ✅ CREATE INVITE URL
+      const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${inviteToken}`;
+      console.log('📨 Invite URL:', inviteUrl);
+      
       const qrCodeURL = getQRCodeURL(guest.qr_code);
       
       // SEND EMAIL (if selected and guest has email)
       if (channels.email && guest.email) {
         try {
           console.log(`📧 Sending email to: ${guest.email}`);
-          const emailHTML = getInvitationEmailHTML(guest, event, qrCodeURL);
+          const emailHTML = getGuestInvitationEmailHTML(guest, event, inviteUrl);
           const emailResult = await sendEmail(
             guest.email,
             `You're invited to ${event.name}`,
