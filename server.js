@@ -7,6 +7,7 @@ const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+const QRCode = require('qrcode');  // ✅ ADDED: For simple token QR generation
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -72,6 +73,30 @@ try {
 // HELPER FUNCTIONS
 // ============================================
 
+// ✅ UPDATED: Generate simple check-in token
+function generateCheckInToken() {
+  return 'GC-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+}
+
+// ✅ UPDATED: Generate QR code as base64 with simple token
+async function generateQRCodeBase64(data) {
+  try {
+    const qrCode = await QRCode.toDataURL(data, {
+      width: 256,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+      }
+    });
+    return qrCode;
+  } catch (error) {
+    console.error('Error generating QR code:', error);
+    throw error;
+  }
+}
+
+// ⚠️ DEPRECATED: Old QR generation (kept for backward compatibility)
 function generateQRCode(guest, event) {
   return JSON.stringify({
     guest_id: guest.id,
@@ -1249,46 +1274,43 @@ app.post('/api/guests', async (req, res) => {
   try {
     const { event_id, name, email, phone, category, plus_ones, is_walkin } = req.body;
     
-    const { data: event } = await supabase
-      .from('events')
-      .select('*')
-      .eq('id', event_id)
-      .single();
+    console.log('Creating guest:', { name, email, phone });
+
+    // ✅ GENERATE SIMPLE CHECK-IN TOKEN
+    const checkInToken = generateCheckInToken();
     
-    // First create the guest WITHOUT qr_code
-    const { data: guestData, error: insertError } = await supabase
+    // ✅ QR CODE NOW CONTAINS ONLY THE TOKEN (not JSON)
+    const qrCode = await generateQRCodeBase64(checkInToken);
+
+    // Generate invite token for email invitations
+    const inviteToken = crypto.randomBytes(32).toString('hex');
+    
+    // Create guest with simple token
+    const { data, error } = await supabase
       .from('guests')
       .insert([{
         event_id,
         name,
-        email,
-        phone,
+        email: email || '',
+        phone: phone || '',
         category: category || 'General',
         plus_ones: plus_ones || 0,
         is_walkin: is_walkin || false,
-        qr_code: '', // Temporary empty
+        qr_code: qrCode,
+        check_in_token: checkInToken,  // ✅ NEW: Simple token for scanning
+        invite_token: inviteToken,
         checked_in: false
       }])
       .select()
       .single();
     
-    if (insertError) throw insertError;
-    
-    // Now generate QR code with the ACTUAL guest ID
-    const qrData = generateQRCode({ name, id: guestData.id }, event);
-    
-    // Update guest with proper QR code
-    const { data, error } = await supabase
-      .from('guests')
-      .update({ qr_code: qrData })
-      .eq('id', guestData.id)
-      .select()
-      .single();
-    
     if (error) throw error;
     
+    console.log('✅ Guest created with check-in token:', checkInToken);
     res.json({ success: true, guest: data });
+    
   } catch (error) {
+    console.error('❌ Error creating guest:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -1331,6 +1353,84 @@ app.post('/api/guests/:guestId/checkin', async (req, res) => {
     res.json({ success: true, guest: data });
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+// ✅ NEW: Token-based check-in (from QR code scan)
+app.post('/api/checkin/token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    
+    console.log('📱 Token check-in attempt:', token);
+    
+    // Validate token
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Invalid token format' });
+    }
+
+    // Clean and uppercase token
+    const cleanToken = token.trim().toUpperCase();
+
+    // Find guest by check_in_token
+    const { data: guest, error: findError } = await supabase
+      .from('guests')
+      .select('*')
+      .eq('check_in_token', cleanToken)
+      .single();
+
+    if (findError || !guest) {
+      console.log('❌ Guest not found for token:', cleanToken);
+      return res.status(404).json({ 
+        error: 'Invalid QR code. Guest not found.' 
+      });
+    }
+
+    console.log('✅ Guest found:', guest.name, '(ID:', guest.id, ')');
+
+    // Check if already checked in
+    if (guest.checked_in) {
+      console.log('⚠️ Guest already checked in:', guest.name);
+      return res.status(200).json({ 
+        success: true,
+        guest,
+        message: `${guest.name} is already checked in`,
+        already_checked_in: true
+      });
+    }
+
+    // Perform check-in
+    const now = new Date();
+    const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+    const { data: updatedGuest, error: updateError } = await supabase
+      .from('guests')
+      .update({
+        checked_in: true,
+        checked_in_time: time,
+        checked_in_by: 'QR Scanner'
+      })
+      .eq('id', guest.id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('❌ Error updating guest:', updateError);
+      throw updateError;
+    }
+
+    console.log('🎉 Check-in successful:', updatedGuest.name);
+
+    res.json({ 
+      success: true, 
+      guest: updatedGuest,
+      message: `${updatedGuest.name} checked in successfully!`
+    });
+
+  } catch (error) {
+    console.error('❌ Token check-in error:', error);
+    res.status(500).json({ 
+      error: 'Check-in failed. Please try again.' 
+    });
   }
 });
 
@@ -2321,6 +2421,79 @@ app.get('/api/debug/msg91', (req, res) => {
     MSG91_ROUTE: process.env.MSG91_ROUTE || 'Not set (optional)',
     MSG91_DLT_TEMPLATE_ID: process.env.MSG91_DLT_TEMPLATE_ID || 'Not set (optional)'
   });
+});
+
+// ============================================
+// ADMIN UTILITY - REGENERATE TOKENS
+// ============================================
+
+// ✅ ADMIN: Regenerate simple tokens for all existing guests (run once)
+app.post('/api/admin/regenerate-tokens', async (req, res) => {
+  try {
+    console.log('🔄 Starting token regeneration for all guests...');
+
+    // Get all guests
+    const { data: guests, error } = await supabase
+      .from('guests')
+      .select('id, name');
+
+    if (error) throw error;
+
+    console.log(`📋 Found ${guests.length} total guests`);
+
+    let updated = 0;
+    let failed = 0;
+
+    for (const guest of guests) {
+      try {
+        // Generate new simple token
+        const checkInToken = generateCheckInToken();
+        
+        // Generate new simple QR code (just the token!)
+        const qrCode = await generateQRCodeBase64(checkInToken);
+
+        // Update guest with new token and QR
+        const { error: updateError } = await supabase
+          .from('guests')
+          .update({
+            check_in_token: checkInToken,
+            qr_code: qrCode
+          })
+          .eq('id', guest.id);
+
+        if (updateError) throw updateError;
+
+        updated++;
+        
+        // Log progress every 50 guests
+        if (updated % 50 === 0) {
+          console.log(`✅ Progress: ${updated}/${guests.length} guests updated...`);
+        }
+      } catch (err) {
+        console.error(`❌ Failed to update guest ${guest.name}:`, err.message);
+        failed++;
+      }
+    }
+
+    console.log(`🎉 Token regeneration complete!`);
+    console.log(`✅ Successfully updated: ${updated} guests`);
+    console.log(`❌ Failed: ${failed} guests`);
+
+    res.json({ 
+      success: true, 
+      total: guests.length,
+      updated,
+      failed,
+      message: `Regenerated tokens for ${updated} guests`
+    });
+
+  } catch (error) {
+    console.error('❌ Token regeneration error:', error);
+    res.status(500).json({ 
+      error: 'Token regeneration failed',
+      details: error.message 
+    });
+  }
 });
 
 // ============================================
