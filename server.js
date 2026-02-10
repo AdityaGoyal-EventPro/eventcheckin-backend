@@ -7,7 +7,7 @@ const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
-const QRCode = require('qrcode');  // ✅ ADDED: For simple token QR generation
+// QR codes are now generated on the frontend from check_in_token
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -78,23 +78,8 @@ function generateCheckInToken() {
   return 'GC-' + Math.random().toString(36).substring(2, 10).toUpperCase();
 }
 
-// ✅ UPDATED: Generate QR code as base64 with simple token
-async function generateQRCodeBase64(data) {
-  try {
-    const qrCode = await QRCode.toDataURL(data, {
-      width: 256,
-      margin: 2,
-      color: {
-        dark: '#000000',
-        light: '#FFFFFF'
-      }
-    });
-    return qrCode;
-  } catch (error) {
-    console.error('Error generating QR code:', error);
-    throw error;
-  }
-}
+// ✅ QR codes are now generated on the frontend using check_in_token
+// No server-side QR image generation needed!
 
 // ⚠️ DEPRECATED: Old QR generation (kept for backward compatibility)
 function generateQRCode(guest, event) {
@@ -205,8 +190,8 @@ async function sendSMSInvitation(guest, event) {
     }
     console.log(`📱 Formatted phone: ${cleanPhone}`);
     
-    // Generate QR code URL
-    const qrCodeURL = getQRCodeURL(guest.qr_code);
+    // Generate QR code URL from check-in token
+    const qrCodeURL = getQRCodeURL(guest.check_in_token || guest.qr_code || '');
     
     // Format date
     const eventDate = new Date(event.date).toLocaleDateString('en-US', {
@@ -1276,16 +1261,13 @@ app.post('/api/guests', async (req, res) => {
     
     console.log('Creating guest:', { name, email, phone });
 
-    // ✅ GENERATE SIMPLE CHECK-IN TOKEN
+    // ✅ GENERATE SIMPLE CHECK-IN TOKEN (no QR image stored!)
     const checkInToken = generateCheckInToken();
-    
-    // ✅ QR CODE NOW CONTAINS ONLY THE TOKEN (not JSON)
-    const qrCode = await generateQRCodeBase64(checkInToken);
 
     // Generate invite token for email invitations
     const inviteToken = crypto.randomBytes(32).toString('hex');
     
-    // Create guest with simple token
+    // Create guest - NO qr_code image stored (frontend generates QR from token)
     const { data, error } = await supabase
       .from('guests')
       .insert([{
@@ -1296,8 +1278,7 @@ app.post('/api/guests', async (req, res) => {
         category: category || 'General',
         plus_ones: plus_ones || 0,
         is_walkin: is_walkin || false,
-        qr_code: qrCode,
-        check_in_token: checkInToken,  // ✅ NEW: Simple token for scanning
+        check_in_token: checkInToken,
         invite_token: inviteToken,
         checked_in: false
       }])
@@ -1637,7 +1618,7 @@ app.get('/api/invites/guest/:token', async (req, res) => {
         phone: guest.phone,
         category: guest.category,
         plus_ones: guest.plus_ones,
-        qr_code: guest.qr_code,
+        check_in_token: guest.check_in_token,  // ✅ Frontend generates QR from this
         checked_in: guest.checked_in,
         checked_in_time: guest.checked_in_time
       },
@@ -1760,7 +1741,7 @@ app.post('/api/invitations/send', async (req, res) => {
       const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${inviteToken}`;
       console.log('📨 Invite URL:', inviteUrl);
       
-      const qrCodeURL = getQRCodeURL(guest.qr_code);
+      const qrCodeURL = getQRCodeURL(guest.check_in_token || guest.qr_code || '');
       
       // SEND EMAIL (if selected and guest has email)
       if (channels.email && guest.email) {
@@ -2446,18 +2427,14 @@ app.post('/api/admin/regenerate-tokens', async (req, res) => {
 
     for (const guest of guests) {
       try {
-        // Generate new simple token
+        // Generate new simple token (no QR image needed)
         const checkInToken = generateCheckInToken();
-        
-        // Generate new simple QR code (just the token!)
-        const qrCode = await generateQRCodeBase64(checkInToken);
 
-        // Update guest with new token and QR
+        // Update guest with new token only
         const { error: updateError } = await supabase
           .from('guests')
           .update({
-            check_in_token: checkInToken,
-            qr_code: qrCode
+            check_in_token: checkInToken
           })
           .eq('id', guest.id);
 
