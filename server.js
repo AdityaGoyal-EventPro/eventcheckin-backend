@@ -462,8 +462,8 @@ app.post('/api/auth/signup', async (req, res) => {
       venue_name = venueData?.name || null;
     }
     
-    // ✅ CHANGED: Both hosts AND venue users now need approval
-    const status = (role === 'host' || role === 'venue') ? 'pending' : 'active';
+   // Hosts auto-approved, venue staff still needs admin approval
+  const status = (role === 'venue') ? 'pending' : 'active';
     
     const { data: userData, error: userError } = await supabase
       .from('users')
