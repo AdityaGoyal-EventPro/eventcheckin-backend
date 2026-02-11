@@ -1,5 +1,5 @@
 // ============================================
-// EVENT CHECK-IN PRO - BACKEND API (WITH HOST APPROVAL + FORGOT PASSWORD)
+// EVENT CHECK-IN PRO - BACKEND API (WITH HOST APPROVAL + FORGOT PASSWORD + EVENT LIFECYCLE)
 // ============================================
 
 const express = require('express');
@@ -799,9 +799,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // ============================================
-// EVENT ROUTES
+// EVENT ROUTES (WITH LIFECYCLE)
 // ============================================
 
+// ✅ UPDATED: Create event with status 'created'
 app.post('/api/events', async (req, res) => {
   try {
     const { name, date, time_start, time_end, venue_id, host_id, expected_guests } = req.body;
@@ -829,7 +830,7 @@ app.post('/api/events', async (req, res) => {
         venue_id,
         host_id,
         expected_guests,
-        status: 'active',
+        status: 'created',
         color: 'purple'
       }])
       .select()
@@ -849,6 +850,7 @@ app.get('/api/events', async (req, res) => {
     const { data, error } = await supabase
       .from('events')
       .select('*')
+      .in('status', ['created', 'completed'])
       .order('date', { ascending: false });
     
     if (error) throw error;
@@ -859,6 +861,7 @@ app.get('/api/events', async (req, res) => {
   }
 });
 
+// ✅ UPDATED: Get events for host (excludes archived)
 app.get('/api/events/host/:hostId', async (req, res) => {
   try {
     const { hostId } = req.params;
@@ -871,11 +874,12 @@ app.get('/api/events/host/:hostId', async (req, res) => {
     
     console.log('Loading events for host:', hostId);
     
+    // Only return non-archived events
     const { data: events, error } = await supabase
       .from('events')
       .select('*')
       .eq('host_id', hostId)
-      .is('deleted_by', null)
+      .in('status', ['created', 'completed'])
       .order('date', { ascending: false });
     
     if (error) throw error;
@@ -906,6 +910,7 @@ app.get('/api/events/host/:hostId', async (req, res) => {
   }
 });
 
+// ✅ UPDATED: Get events for venue (includes 48hr cancelled events)
 app.get('/api/events/venue/:venueId', async (req, res) => {
   try {
     const { venueId } = req.params;
@@ -918,19 +923,35 @@ app.get('/api/events/venue/:venueId', async (req, res) => {
     
     console.log('Loading events for venue:', venueId);
     
+    // Get non-archived events
     const { data: events, error } = await supabase
       .from('events')
       .select('*')
       .eq('venue_id', venueId)
-      .is('deleted_by', null)
+      .in('status', ['created', 'completed'])
       .order('date', { ascending: false });
     
     if (error) throw error;
     
-    console.log(`Found ${events?.length || 0} events for venue ${venueId}`);
+    // Also get recently cancelled events (cancelled before event, within 48hrs)
+    const fortyEightHoursAgo = new Date();
+    fortyEightHoursAgo.setHours(fortyEightHoursAgo.getHours() - 48);
+    
+    const { data: cancelledEvents } = await supabase
+      .from('events')
+      .select('*')
+      .eq('venue_id', venueId)
+      .eq('status', 'archived')
+      .eq('cancelled_before_event', true)
+      .gte('deleted_at', fortyEightHoursAgo.toISOString());
+    
+    // Combine both lists
+    const allEvents = [...(events || []), ...(cancelledEvents || [])];
+    
+    console.log(`Found ${allEvents.length} events for venue ${venueId} (${cancelledEvents?.length || 0} recently cancelled)`);
     
     // Get guest counts for each event
-    const eventsWithStats = await Promise.all(events.map(async (event) => {
+    const eventsWithStats = await Promise.all(allEvents.map(async (event) => {
       const { data: guests } = await supabase
         .from('guests')
         .select('id, checked_in')
@@ -943,6 +964,110 @@ app.get('/api/events/venue/:venueId', async (req, res) => {
         ...event,
         total_guests: totalGuests,
         checked_in_count: checkedInCount
+      };
+    }));
+    
+    res.json({ events: eventsWithStats });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ✅ NEW: Get archived events (Host)
+app.get('/api/events/host/:hostId/archived', async (req, res) => {
+  try {
+    const { hostId } = req.params;
+    if (!hostId || hostId === 'undefined') return res.json({ events: [] });
+    
+    const { data: events, error } = await supabase
+      .from('events')
+      .select('*')
+      .eq('host_id', hostId)
+      .eq('status', 'archived')
+      .order('deleted_at', { ascending: false });
+    
+    if (error) throw error;
+    
+    // Add guest counts
+    const eventsWithStats = await Promise.all((events || []).map(async (event) => {
+      const { data: guests } = await supabase
+        .from('guests')
+        .select('id, checked_in')
+        .eq('event_id', event.id);
+      
+      return {
+        ...event,
+        total_guests: guests?.length || 0,
+        checked_in_count: guests?.filter(g => g.checked_in).length || 0
+      };
+    }));
+    
+    res.json({ events: eventsWithStats });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ✅ NEW: Get archived events (Venue)
+app.get('/api/events/venue/:venueId/archived', async (req, res) => {
+  try {
+    const { venueId } = req.params;
+    if (!venueId || venueId === 'undefined') return res.json({ events: [] });
+    
+    const { data: events, error } = await supabase
+      .from('events')
+      .select('*')
+      .eq('venue_id', venueId)
+      .eq('status', 'archived')
+      .order('deleted_at', { ascending: false });
+    
+    if (error) throw error;
+    
+    const eventsWithStats = await Promise.all((events || []).map(async (event) => {
+      const { data: guests } = await supabase
+        .from('guests')
+        .select('id, checked_in')
+        .eq('event_id', event.id);
+      
+      return {
+        ...event,
+        total_guests: guests?.length || 0,
+        checked_in_count: guests?.filter(g => g.checked_in).length || 0
+      };
+    }));
+    
+    res.json({ events: eventsWithStats });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ✅ NEW: Get venue events by specific date
+app.get('/api/events/venue/:venueId/by-date/:date', async (req, res) => {
+  try {
+    const { venueId, date } = req.params;
+    if (!venueId || venueId === 'undefined') return res.json({ events: [] });
+    
+    const { data: events, error } = await supabase
+      .from('events')
+      .select('*')
+      .eq('venue_id', venueId)
+      .eq('date', date)
+      .in('status', ['created', 'completed'])
+      .order('time_start', { ascending: true });
+    
+    if (error) throw error;
+    
+    const eventsWithStats = await Promise.all((events || []).map(async (event) => {
+      const { data: guests } = await supabase
+        .from('guests')
+        .select('id, checked_in')
+        .eq('event_id', event.id);
+      
+      return {
+        ...event,
+        total_guests: guests?.length || 0,
+        checked_in_count: guests?.filter(g => g.checked_in).length || 0
       };
     }));
     
@@ -1883,10 +2008,85 @@ app.get('/api/events/:id', async (req, res) => {
 });
 
 // ============================================
-// DELETE EVENT ENDPOINTS
+// EVENT LIFECYCLE: SMART DELETE, RESTORE, PURGE
 // ============================================
 
-// Soft delete event
+// ✅ NEW: Smart delete — handles all 3 scenarios
+app.post('/api/events/:id/smart-delete', async (req, res) => {
+  try {
+    const { deleted_by } = req.body;  // 'host' or 'venue'
+    const eventId = req.params.id;
+    
+    if (!['host', 'venue'].includes(deleted_by)) {
+      return res.status(400).json({ error: 'deleted_by must be "host" or "venue"' });
+    }
+
+    // Get event details
+    const { data: event, error: eventError } = await supabase
+      .from('events')
+      .select('*')
+      .eq('id', eventId)
+      .single();
+    
+    if (eventError) throw eventError;
+
+    // Get guest stats
+    const { data: guests } = await supabase
+      .from('guests')
+      .select('id, checked_in')
+      .eq('event_id', eventId);
+    
+    const guestCount = guests?.length || 0;
+    const checkedInCount = guests?.filter(g => g.checked_in).length || 0;
+
+    // ── Scenario 1: 0 guests → instant permanent delete ──
+    if (guestCount === 0) {
+      await supabase.from('events').delete().eq('id', eventId);
+      console.log(`🗑️ Event instantly deleted (0 guests): ${event.name}`);
+      return res.json({ 
+        action: 'deleted',
+        message: 'Event permanently deleted (no guest data to preserve)'
+      });
+    }
+
+    // ── Check if event is in the future (pre-event cancellation) ──
+    const eventDate = new Date(`${event.date}T${event.time_end || '23:59'}`);
+    const isPastEvent = eventDate < new Date();
+    const cancelledBeforeEvent = !isPastEvent;
+
+    // ── Scenario 2 & 3: Has guests → archive ──
+    const { data: updated, error: updateError } = await supabase
+      .from('events')
+      .update({
+        status: 'archived',
+        deleted_by,
+        deleted_at: new Date().toISOString(),
+        cancelled_before_event: cancelledBeforeEvent
+      })
+      .eq('id', eventId)
+      .select()
+      .single();
+    
+    if (updateError) throw updateError;
+
+    console.log(`📦 Event archived by ${deleted_by}: ${event.name} (${guestCount} guests, ${checkedInCount} checked in, cancelled_before: ${cancelledBeforeEvent})`);
+    
+    res.json({ 
+      action: 'archived',
+      message: cancelledBeforeEvent 
+        ? 'Event cancelled and archived. Venue will be notified.'
+        : 'Event archived. You can restore it within 30 days.',
+      cancelled_before_event: cancelledBeforeEvent,
+      guest_count: guestCount,
+      checked_in_count: checkedInCount
+    });
+  } catch (error) {
+    console.error('Smart delete error:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ✅ KEEP: Legacy soft delete route for backward compatibility
 app.patch('/api/events/:id/delete', async (req, res) => {
   try {
     const { deleted_by } = req.body;
@@ -1894,6 +2094,7 @@ app.patch('/api/events/:id/delete', async (req, res) => {
     const { data, error } = await supabase
       .from('events')
       .update({ 
+        status: 'archived',
         deleted_by,
         deleted_at: new Date().toISOString()
       })
@@ -1909,16 +2110,54 @@ app.patch('/api/events/:id/delete', async (req, res) => {
   }
 });
 
-// Hard delete event
+// ✅ NEW: Restore from archive
+app.patch('/api/events/:id/restore', async (req, res) => {
+  try {
+    // Get the event to determine what status to restore to
+    const { data: event, error: findError } = await supabase
+      .from('events')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+    
+    if (findError) throw findError;
+
+    // Determine restore status based on event date
+    const eventEndTime = new Date(`${event.date}T${event.time_end || '23:59'}`);
+    const now = new Date();
+    const restoreStatus = eventEndTime < now ? 'completed' : 'created';
+
+    const { data, error } = await supabase
+      .from('events')
+      .update({ 
+        status: restoreStatus,
+        deleted_by: null,
+        deleted_at: null,
+        cancelled_before_event: false
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    console.log(`♻️ Event restored to '${restoreStatus}': ${data.name}`);
+    res.json({ event: data, restored_status: restoreStatus });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ✅ UPDATED: Hard delete event (keeps guest data — just detaches)
 app.delete('/api/events/:id', async (req, res) => {
   try {
-    // First delete all guests
+    // Detach guests (keep their records, just unlink from event)
     await supabase
       .from('guests')
-      .delete()
+      .update({ event_id: null })
       .eq('event_id', req.params.id);
     
-    // Then delete event
+    // Delete the event record
     const { error } = await supabase
       .from('events')
       .delete()
@@ -1926,8 +2165,100 @@ app.delete('/api/events/:id', async (req, res) => {
     
     if (error) throw error;
     
+    console.log(`🗑️ Event permanently deleted: ${req.params.id}`);
     res.json({ success: true });
   } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ✅ NEW: Auto-update event statuses (complete → archive → purge)
+app.post('/api/events/auto-update-status', async (req, res) => {
+  try {
+    const now = new Date();
+    
+    // 1. Auto-complete: events where end time has passed and status is still 'created'
+    const { data: createdEvents } = await supabase
+      .from('events')
+      .select('id, name, date, time_end')
+      .eq('status', 'created');
+    
+    let completedCount = 0;
+    for (const event of (createdEvents || [])) {
+      const endTime = new Date(`${event.date}T${event.time_end || '23:59'}`);
+      if (endTime < now) {
+        await supabase
+          .from('events')
+          .update({ status: 'completed' })
+          .eq('id', event.id);
+        console.log(`✅ Auto-completed: ${event.name}`);
+        completedCount++;
+      }
+    }
+    
+    // 2. Auto-archive: completed events older than 15 days
+    const fifteenDaysAgo = new Date();
+    fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+    
+    const { data: completedEvents } = await supabase
+      .from('events')
+      .select('id, name, date')
+      .eq('status', 'completed');
+    
+    let archivedCount = 0;
+    for (const event of (completedEvents || [])) {
+      const eventDate = new Date(event.date);
+      if (eventDate < fifteenDaysAgo) {
+        await supabase
+          .from('events')
+          .update({ 
+            status: 'archived',
+            deleted_at: new Date().toISOString(),
+            deleted_by: 'system'
+          })
+          .eq('id', event.id);
+        console.log(`📦 Auto-archived: ${event.name}`);
+        archivedCount++;
+      }
+    }
+    
+    // 3. Auto-purge: archived events older than 30 days
+    const { data: archivedEvents } = await supabase
+      .from('events')
+      .select('id, name, deleted_at')
+      .eq('status', 'archived')
+      .not('deleted_at', 'is', null);
+    
+    let purgedCount = 0;
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    for (const event of (archivedEvents || [])) {
+      if (new Date(event.deleted_at) < thirtyDaysAgo) {
+        // Keep guest data, just detach
+        await supabase
+          .from('guests')
+          .update({ event_id: null })
+          .eq('event_id', event.id);
+        
+        await supabase
+          .from('events')
+          .delete()
+          .eq('id', event.id);
+        
+        console.log(`🔥 Auto-purged: ${event.name}`);
+        purgedCount++;
+      }
+    }
+    
+    res.json({ 
+      completed: completedCount, 
+      archived: archivedCount, 
+      purged: purgedCount,
+      message: `Completed: ${completedCount}, Archived: ${archivedCount}, Purged: ${purgedCount}`
+    });
+  } catch (error) {
+    console.error('Auto-update error:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -2486,5 +2817,6 @@ app.listen(PORT, () => {
   console.log(`\n📱 Debug endpoint: GET /api/debug/msg91`);
   console.log(`🔐 Forgot Password: POST /api/auth/forgot-password`);
   console.log(`🔐 Reset Password: POST /api/auth/reset-password`);
+  console.log(`🔄 Event Lifecycle: POST /api/events/auto-update-status`);
   console.log(`\n⚠️  HOST APPROVAL: Hosts now require admin approval before login\n`);
 });
