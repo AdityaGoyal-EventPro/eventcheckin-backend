@@ -1423,6 +1423,8 @@ app.post('/api/guests', async (req, res) => {
 
 app.get('/api/guests/event/:eventId', async (req, res) => {
   try {
+    const userRole = req.headers['x-user-role'];
+    
     const { data, error } = await supabase
       .from('guests')
       .select('*')
@@ -1431,7 +1433,36 @@ app.get('/api/guests/event/:eventId', async (req, res) => {
     
     if (error) throw error;
     
-    res.json({ guests: data });
+    // ✅ Mask phone/email for venue users (except walk-in guests they added)
+    let guests = data;
+    if (userRole === 'venue') {
+      guests = data.map(guest => {
+        // Walk-in guests added by venue — show full details
+        if (guest.is_walkin) return guest;
+        
+        // Mask phone: 9876543210 → 9876***210
+        let maskedPhone = guest.phone;
+        if (guest.phone && guest.phone.length >= 6) {
+          maskedPhone = guest.phone.substring(0, 4) + '***' + guest.phone.slice(-3);
+        }
+        
+        // Mask email: john.doe@gmail.com → j***@gmail.com
+        let maskedEmail = guest.email;
+        if (guest.email && guest.email.includes('@')) {
+          const [local, domain] = guest.email.split('@');
+          maskedEmail = local[0] + '***@' + domain;
+        }
+        
+        return {
+          ...guest,
+          phone: maskedPhone,
+          email: maskedEmail,
+          _masked: true  // flag so frontend knows data is masked
+        };
+      });
+    }
+    
+    res.json({ guests });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
