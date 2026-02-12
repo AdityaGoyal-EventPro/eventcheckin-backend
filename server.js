@@ -819,6 +819,9 @@ app.post('/api/events', async (req, res) => {
       venue_name = venueData?.name || null;
     }
     
+    // Generate unique registration token for guest self-registration
+    const registration_token = crypto.randomBytes(6).toString('hex'); // 12-char token
+    
     const { data, error } = await supabase
       .from('events')
       .insert([{
@@ -831,7 +834,8 @@ app.post('/api/events', async (req, res) => {
         host_id,
         expected_guests,
         status: 'created',
-        color: 'purple'
+        color: 'purple',
+        registration_token
       }])
       .select()
       .single();
@@ -1377,6 +1381,161 @@ app.post('/api/invites/revoke/:id', async (req, res) => {
 });
 
 // ============================================
+// GUEST SELF-REGISTRATION (Public routes - no auth)
+// ============================================
+
+// Get event info for registration page (public)
+app.get('/api/events/register/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    const { data: event, error } = await supabase
+      .from('events')
+      .select('id, name, date, time_start, time_end, venue_name, status, registration_token')
+      .eq('registration_token', token)
+      .single();
+    
+    if (error || !event) {
+      return res.status(404).json({ error: 'Invalid or expired registration link' });
+    }
+    
+    // Only allow registration for created (upcoming) events
+    if (event.status !== 'created') {
+      return res.status(400).json({ error: 'Registration is closed for this event' });
+    }
+    
+    // Check if event date has passed
+    const eventEnd = event.time_end 
+      ? new Date(`${event.date}T${event.time_end}`) 
+      : new Date(`${event.date}T23:59`);
+    if (eventEnd < new Date()) {
+      return res.status(400).json({ error: 'This event has already ended' });
+    }
+    
+    res.json({ 
+      event: {
+        name: event.name,
+        date: event.date,
+        time_start: event.time_start,
+        time_end: event.time_end,
+        venue_name: event.venue_name
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Guest self-registration (public)
+app.post('/api/events/register/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { name, phone, email } = req.body;
+    
+    if (!name || !phone) {
+      return res.status(400).json({ error: 'Name and phone are required' });
+    }
+    
+    // Validate phone (10 digits, starts with 6-9)
+    const cleanPhone = phone.replace(/\D/g, '');
+    if (cleanPhone.length !== 10 || !['6','7','8','9'].includes(cleanPhone[0])) {
+      return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
+    }
+    
+    // Find event by token
+    const { data: event, error: eventError } = await supabase
+      .from('events')
+      .select('id, name, status, date, time_end')
+      .eq('registration_token', token)
+      .single();
+    
+    if (eventError || !event) {
+      return res.status(404).json({ error: 'Invalid or expired registration link' });
+    }
+    
+    if (event.status !== 'created') {
+      return res.status(400).json({ error: 'Registration is closed for this event' });
+    }
+    
+    // Check if event date has passed
+    const eventEnd = event.time_end 
+      ? new Date(`${event.date}T${event.time_end}`) 
+      : new Date(`${event.date}T23:59`);
+    if (eventEnd < new Date()) {
+      return res.status(400).json({ error: 'This event has already ended' });
+    }
+    
+    // Check for duplicate phone in same event
+    const { data: existing } = await supabase
+      .from('guests')
+      .select('id, name')
+      .eq('event_id', event.id)
+      .eq('phone', cleanPhone);
+    
+    if (existing && existing.length > 0) {
+      return res.status(400).json({ error: 'This phone number is already registered for this event' });
+    }
+    
+    // Generate check-in token
+    const checkInToken = generateCheckInToken();
+    
+    // Add guest to event
+    const { data: guest, error: guestError } = await supabase
+      .from('guests')
+      .insert([{
+        event_id: event.id,
+        name: name.trim(),
+        phone: cleanPhone,
+        email: email ? email.trim().toLowerCase() : null,
+        category: 'General',
+        plus_ones: 0,
+        checked_in: false,
+        is_self_registered: true,
+        checkin_token: checkInToken
+      }])
+      .select()
+      .single();
+    
+    if (guestError) throw guestError;
+    
+    res.json({ success: true, message: 'You have been registered successfully!' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get registration link for an event (host only)
+app.get('/api/events/:eventId/registration-link', async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    
+    const { data: event, error } = await supabase
+      .from('events')
+      .select('id, registration_token')
+      .eq('id', eventId)
+      .single();
+    
+    if (error || !event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+    
+    // If no token exists (older events), generate one
+    let token = event.registration_token;
+    if (!token) {
+      token = crypto.randomBytes(6).toString('hex');
+      await supabase
+        .from('events')
+        .update({ registration_token: token })
+        .eq('id', eventId);
+    }
+    
+    res.json({ token });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
 // GUEST ROUTES
 // ============================================
 
@@ -1705,6 +1864,110 @@ app.post('/api/events/:eventId/regenerate-all-qr', async (req, res) => {
     });
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+// ============================================
+// RSVP / GUEST SELF-REGISTRATION (PUBLIC)
+// ============================================
+
+// Get event details by registration token (PUBLIC - no auth)
+app.get('/api/rsvp/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    const { data: event, error } = await supabase
+      .from('events')
+      .select('id, name, date, time_start, time_end, venue_name, status, registration_token')
+      .eq('registration_token', token)
+      .single();
+    
+    if (error || !event) {
+      return res.status(404).json({ error: 'Invalid or expired registration link' });
+    }
+    
+    // Don't allow registration for archived events
+    if (event.status === 'archived') {
+      return res.status(400).json({ error: 'This event is no longer accepting registrations' });
+    }
+    
+    // Don't expose internal fields
+    const { registration_token, ...safeEvent } = event;
+    res.json({ event: safeEvent });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Guest self-registration via RSVP link (PUBLIC - no auth)
+app.post('/api/rsvp/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { name, phone, email } = req.body;
+    
+    if (!name || !phone) {
+      return res.status(400).json({ error: 'Name and phone number are required' });
+    }
+    
+    // Validate phone
+    const cleanPhone = phone.replace(/\D/g, '');
+    if (cleanPhone.length !== 10) {
+      return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
+    }
+    
+    // Find event by token
+    const { data: event, error: eventError } = await supabase
+      .from('events')
+      .select('id, name, status')
+      .eq('registration_token', token)
+      .single();
+    
+    if (eventError || !event) {
+      return res.status(404).json({ error: 'Invalid or expired registration link' });
+    }
+    
+    if (event.status === 'archived') {
+      return res.status(400).json({ error: 'This event is no longer accepting registrations' });
+    }
+    
+    // Check for duplicate (same phone in same event)
+    const { data: existing } = await supabase
+      .from('guests')
+      .select('id, name')
+      .eq('event_id', event.id)
+      .eq('phone', cleanPhone)
+      .maybeSingle();
+    
+    if (existing) {
+      return res.status(400).json({ 
+        error: `You're already registered as "${existing.name}". No need to register again!` 
+      });
+    }
+    
+    // Add guest to event (auto-approved)
+    const { data: guest, error: guestError } = await supabase
+      .from('guests')
+      .insert([{
+        event_id: event.id,
+        name: name.trim(),
+        phone: cleanPhone,
+        email: email ? email.trim().toLowerCase() : null,
+        checked_in: false,
+        category: 'General',
+        source: 'self_registered'
+      }])
+      .select()
+      .single();
+    
+    if (guestError) throw guestError;
+    
+    res.json({ 
+      success: true, 
+      message: `You're registered for "${event.name}"!`,
+      guest: { name: guest.name, id: guest.id }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
