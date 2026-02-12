@@ -2673,11 +2673,35 @@ app.put('/api/admin/venues/:venueId', requireAdmin, async (req, res) => {
   }
 });
 
-// Delete venue (admin)
+// Delete venue (admin) - checks for linked data first
 app.delete('/api/admin/venues/:venueId', requireAdmin, async (req, res) => {
   try {
     const { venueId } = req.params;
     const adminId = req.headers['x-user-id'];
+    
+    // Check for linked events
+    const { data: events } = await supabase
+      .from('events')
+      .select('id')
+      .eq('venue_id', venueId);
+    
+    if (events && events.length > 0) {
+      return res.status(400).json({ 
+        error: `Cannot delete: ${events.length} event(s) are linked to this venue. Delete or reassign them first.` 
+      });
+    }
+    
+    // Check for linked users
+    const { data: users } = await supabase
+      .from('users')
+      .select('id')
+      .eq('venue_id', venueId);
+    
+    if (users && users.length > 0) {
+      return res.status(400).json({ 
+        error: `Cannot delete: ${users.length} user(s) are linked to this venue. Reassign them first.` 
+      });
+    }
     
     const { error } = await supabase
       .from('venues')
