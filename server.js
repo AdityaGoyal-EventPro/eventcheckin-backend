@@ -462,8 +462,8 @@ app.post('/api/auth/signup', async (req, res) => {
       venue_name = venueData?.name || null;
     }
     
-   // Hosts auto-approved, venue staff still needs admin approval
-  const status = (role === 'venue') ? 'pending' : 'active';
+    // ✅ Hosts auto-approved, venue staff still needs admin approval
+    const status = (role === 'venue') ? 'pending' : 'active';
     
     const { data: userData, error: userError } = await supabase
       .from('users')
@@ -482,9 +482,9 @@ app.post('/api/auth/signup', async (req, res) => {
     
     if (userError) throw userError;
     
-    // ✅ CHANGED: Send pending email to BOTH hosts and venue users
-    if ((role === 'host' || role === 'venue') && process.env.SENDGRID_API_KEY) {
-      const accountType = role === 'host' ? 'Event Host' : 'Venue Manager';
+    // ✅ CHANGED: Only venue users get pending approval email
+    if (role === 'venue' && process.env.SENDGRID_API_KEY) {
+      const accountType = 'Venue Manager';
       
       const emailHTML = `
         <!DOCTYPE html>
@@ -544,7 +544,7 @@ app.post('/api/auth/signup', async (req, res) => {
     res.json({ 
       success: true, 
       user: userData,
-      message: role === 'host' || role === 'venue' 
+      message: role === 'venue' 
         ? 'Account created! Pending admin approval. Check your email for details.' 
         : 'Account created successfully!'
     });
