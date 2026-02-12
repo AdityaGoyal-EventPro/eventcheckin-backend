@@ -1971,6 +1971,9 @@ app.post('/api/rsvp/:token', async (req, res) => {
     }
     
     // Add guest to event (auto-approved)
+    const checkInToken = generateCheckInToken();
+    const inviteToken = crypto.randomBytes(32).toString('hex');
+
     const { data: guest, error: guestError } = await supabase
       .from('guests')
       .insert([{
@@ -1980,7 +1983,9 @@ app.post('/api/rsvp/:token', async (req, res) => {
         email: email ? email.trim().toLowerCase() : null,
         checked_in: false,
         category: 'General',
-        source: 'self_registered'
+        source: 'self_registered',
+        check_in_token: checkInToken,
+        invite_token: inviteToken
       }])
       .select()
       .single();
@@ -2027,6 +2032,14 @@ app.get('/api/invites/guest/:token', async (req, res) => {
     }
 
     console.log('✅ Guest found:', guest.name);
+
+    // Auto-generate check_in_token if guest doesn't have one (legacy guests)
+    if (!guest.check_in_token) {
+      const newToken = generateCheckInToken();
+      await supabase.from('guests').update({ check_in_token: newToken }).eq('id', guest.id);
+      guest.check_in_token = newToken;
+      console.log('✅ Auto-generated check_in_token for legacy guest');
+    }
 
     // Get event details
     const { data: event, error: eventError} = await supabase
