@@ -1506,6 +1506,30 @@ app.post('/api/events/register/:token', async (req, res) => {
   }
 });
 
+// Update event description
+app.patch('/api/events/:eventId/description', async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const { description } = req.body;
+
+    // Basic sanitization — strip script tags
+    const sanitized = (description || '').replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+
+    const { data, error } = await supabase
+      .from('events')
+      .update({ description: sanitized || null })
+      .eq('id', eventId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({ success: true, event: data });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // Get registration link for an event (host only)
 app.get('/api/events/:eventId/registration-link', async (req, res) => {
   try {
