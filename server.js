@@ -805,7 +805,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // ✅ UPDATED: Create event with status 'created'
 app.post('/api/events', async (req, res) => {
   try {
-    const { name, date, time_start, time_end, venue_id, host_id, expected_guests } = req.body;
+    const { name, date, time_start, time_end, venue_id, host_id, host_name, expected_guests, description } = req.body;
     
     // Fetch venue name from venues table
     let venue_name = null;
@@ -832,7 +832,9 @@ app.post('/api/events', async (req, res) => {
         venue_name,
         venue_id,
         host_id,
+        host_name,
         expected_guests,
+        description: description || null,
         status: 'created',
         color: 'purple',
         registration_token
@@ -1878,7 +1880,7 @@ app.get('/api/rsvp/:token', async (req, res) => {
     
     const { data: event, error } = await supabase
       .from('events')
-      .select('id, name, date, time_start, time_end, venue_name, status, registration_token')
+      .select('id, name, date, time_start, time_end, venue_name, host_name, description, status, registration_token')
       .eq('registration_token', token)
       .single();
     
